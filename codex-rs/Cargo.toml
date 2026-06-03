@@ -22,6 +22,7 @@ members = [
     "codex-backend-openapi-models",
     "code-mode",
     "cloud-config",
+    "codex-auth-proxy",
     "cloud-tasks",
     "cloud-tasks-client",
     "cloud-tasks-mock-client",
@@ -135,6 +136,7 @@ codex-agent-graph-store = { path = "agent-graph-store" }
 codex-agent-identity = { path = "agent-identity" }
 codex-ansi-escape = { path = "ansi-escape" }
 codex-api = { path = "codex-api" }
+codex-auth-proxy = { path = "codex-auth-proxy" }
 codex-aws-auth = { path = "aws-auth" }
 codex-app-server = { path = "app-server" }
 codex-app-server-transport = { path = "app-server-transport" }
