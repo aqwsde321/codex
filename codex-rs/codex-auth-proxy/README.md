@@ -13,6 +13,9 @@ Everything else is rejected with `403`.
 
 ## Run the proxy host
 
+For copy/paste server startup steps, see
+[`PROXY_SERVER_RUN.md`](./PROXY_SERVER_RUN.md).
+
 First, log in on the machine that will run the proxy:
 
 ```shell
@@ -29,6 +32,15 @@ codex-auth-proxy \
   --proxy-token-env CODEX_PROXY_TOKEN
 ```
 
+To also persist proxied request/response bodies to SQLite for local inspection:
+
+```shell
+codex-auth-proxy \
+  --listen 0.0.0.0:8787 \
+  --proxy-token-env CODEX_PROXY_TOKEN \
+  --log-db ./codex-auth-proxy.sqlite
+```
+
 For local-only testing, omit `--listen` and the proxy will bind to an ephemeral
 loopback port. Non-loopback listeners require `--proxy-token-env` unless
 `--allow-unauthenticated` is explicitly set.
@@ -42,6 +54,9 @@ curl --fail \
 ```
 
 ## Configure the remote Codex client
+
+For copy/paste setup steps and IP-change usage, see
+[`REMOTE_CLIENT_SETUP.md`](./REMOTE_CLIENT_SETUP.md).
 
 On the machine running Codex against its own files, set the same proxy token:
 
@@ -57,15 +72,67 @@ name = "local-codex-auth-proxy"
 base_url = "http://PROXY_HOST:8787/v1"
 wire_api = "responses"
 env_key = "CODEX_PROXY_TOKEN"
+```
 
-[profiles.local-proxy]
+Create `~/.codex/local-proxy.config.toml`:
+
+```toml
 model_provider = "local-codex-auth-proxy"
+model = "gpt-5.5"
+model_reasoning_effort = "medium"
+service_tier = "default"
 ```
 
 Then run:
 
 ```shell
 codex -p local-proxy
+```
+
+## Inspect logged traffic
+
+When `--log-db` is set, each proxied request is stored in the `proxy_requests`
+table. The row is inserted when the upstream request starts, then updated with
+the raw upstream response body when the response finishes. Streaming responses
+are stored as raw SSE text. If the upstream response includes token `usage`,
+the parsed token counts are stored in dedicated columns.
+
+The generated SQLite file can be opened directly in tools such as DBeaver.
+For a browser UI, run the local-only viewer:
+
+```shell
+codex-auth-proxy viewer \
+  --db ./codex-auth-proxy.sqlite \
+  --listen 127.0.0.1:8788
+```
+
+The viewer opens on a summary page first. It separates request messages,
+collapsible request JSON, extracted response text, response SSE events, and raw
+SSE. Large request strings and SSE event payloads are rendered only when their
+rows are expanded.
+
+Example query:
+
+```sql
+SELECT
+  id,
+  started_at,
+  client_ip,
+  method,
+  path,
+  model,
+  upstream_status,
+  latency_ms,
+  request_bytes,
+  response_bytes,
+  input_tokens,
+  output_tokens,
+  total_tokens,
+  cached_input_tokens,
+  reasoning_output_tokens,
+  error
+FROM proxy_requests
+ORDER BY started_at DESC;
 ```
 
 ## Security notes
@@ -77,3 +144,6 @@ adds the proxy host's current Codex/ChatGPT auth headers.
 Do not expose the proxy without a strong `--proxy-token-env` value and network
 controls. Anyone who can call the proxy can spend the proxy host's Codex account
 quota through the accepted endpoints.
+
+The SQLite log database can contain prompts, file contents, shell output,
+patches, and error logs from `/v1/responses`. Treat it as sensitive data.

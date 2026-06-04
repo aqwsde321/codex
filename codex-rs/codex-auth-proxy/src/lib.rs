@@ -1,5 +1,6 @@
 use std::fs;
 use std::fs::File;
+use std::io::Read;
 use std::io::Write;
 use std::net::IpAddr;
 use std::net::SocketAddr;
@@ -7,11 +8,13 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
+use std::time::Instant;
 
 use anyhow::Context;
 use anyhow::Result;
 use anyhow::anyhow;
 use clap::Parser;
+use clap::Subcommand;
 use clap::ValueEnum;
 use codex_config::types::AuthCredentialsStoreMode;
 use codex_login::AuthManager;
@@ -32,6 +35,27 @@ use tiny_http::Server;
 use tiny_http::StatusCode;
 use tokio::runtime::Runtime;
 
+mod body_recorder;
+mod request_log;
+mod token_usage;
+mod viewer;
+mod viewer_analysis_script;
+mod viewer_html;
+mod viewer_script;
+
+use body_recorder::BodyRecorder;
+use request_log::RequestLogCompletion;
+use request_log::RequestLogStart;
+use request_log::RequestLogger;
+use request_log::log_access_complete;
+use request_log::log_access_received;
+use request_log::log_request_complete;
+use request_log::log_request_start;
+use request_log::model_from_body;
+use request_log::request_content_length;
+use request_log::timestamp_now;
+use viewer::ViewerArgs;
+
 const DEFAULT_LISTEN_ADDR: &str = "127.0.0.1:0";
 
 /// CLI arguments for the Codex auth backed Responses proxy.
@@ -41,6 +65,9 @@ const DEFAULT_LISTEN_ADDR: &str = "127.0.0.1:0";
     about = "Codex auth backed Responses API proxy"
 )]
 pub struct Args {
+    #[command(subcommand)]
+    pub command: Option<Command>,
+
     /// Address to listen on. Use 0.0.0.0:PORT only with proxy authentication.
     #[arg(long, default_value = DEFAULT_LISTEN_ADDR)]
     pub listen: SocketAddr,
@@ -81,6 +108,16 @@ pub struct Args {
     /// ChatGPT backend base URL used while loading/refreshing Codex auth.
     #[arg(long)]
     pub chatgpt_base_url: Option<String>,
+
+    /// Optional SQLite file where raw proxied request/response bodies are logged.
+    #[arg(long, value_name = "FILE")]
+    pub log_db: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Subcommand)]
+pub enum Command {
+    /// Run a local-only HTML viewer for the SQLite request log.
+    Viewer(ViewerArgs),
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -123,6 +160,7 @@ struct ForwardConfig {
     responses_url: Url,
     models_url: Url,
     proxy_auth: ProxyAuth,
+    request_logger: Option<RequestLogger>,
 }
 
 #[derive(Debug, Clone)]
@@ -144,8 +182,15 @@ enum Route {
 }
 
 pub fn run_main(args: Args) -> Result<()> {
+    if let Some(command) = args.command {
+        return match command {
+            Command::Viewer(viewer_args) => viewer::run_viewer(viewer_args),
+        };
+    }
+
     let proxy_auth = proxy_auth_from_args(&args)?;
     require_safe_auth_configuration(args.listen, &proxy_auth, args.allow_unauthenticated)?;
+    let log_db = args.log_db.clone();
 
     let codex_home = match args.codex_home {
         Some(path) => path,
@@ -160,6 +205,10 @@ pub fn run_main(args: Args) -> Result<()> {
             .build()
             .context("building Tokio runtime")?,
     );
+    let request_logger = match log_db.as_ref() {
+        Some(path) => Some(runtime.block_on(RequestLogger::open(path))?),
+        None => None,
+    };
     let auth_manager = runtime.block_on(AuthManager::shared(
         codex_home,
         /*enable_codex_api_key_env*/ false,
@@ -173,6 +222,7 @@ pub fn run_main(args: Args) -> Result<()> {
         models_url: Url::parse(&args.upstream_models_url)
             .context("parsing --upstream-models-url")?,
         proxy_auth,
+        request_logger,
     });
 
     let server = Server::http(args.listen).map_err(|err| anyhow!("creating HTTP server: {err}"))?;
@@ -298,16 +348,44 @@ fn forward_request(
     config: &ForwardConfig,
     mut req: Request,
 ) -> Result<()> {
+    let request_id = uuid::Uuid::new_v4().to_string();
+    let started = Instant::now();
+    let method = req.method().clone();
+    let url_path = req.url().to_string();
+    let path = path_for_url(&url_path).to_string();
+    let query = query_for_url(&url_path);
+    let client_ip = req.remote_addr().map(|addr| addr.ip().to_string());
+    log_access_received(
+        &request_id,
+        client_ip.as_deref(),
+        &method,
+        &path,
+        query.as_deref(),
+        request_content_length(&req),
+    );
+
     if !authorize_proxy_request(config.proxy_auth.clone(), &req) {
         let response = Response::from_string("Unauthorized").with_status_code(StatusCode(401));
         let _ = req.respond(response);
+        log_access_complete(
+            &request_id,
+            Some(401),
+            "Unauthorized".len(),
+            started.elapsed(),
+            None,
+        );
         return Ok(());
     }
 
-    let method = req.method().clone();
-    let url_path = req.url().to_string();
-    if method == Method::Get && path_for_url(&url_path) == "/health" {
-        respond_health(req);
+    if method == Method::Get && path == "/health" {
+        let outcome = respond_health(req);
+        log_access_complete(
+            &request_id,
+            Some(200),
+            outcome.response_bytes,
+            started.elapsed(),
+            outcome.error.as_deref(),
+        );
         return Ok(());
     }
 
@@ -315,13 +393,29 @@ fn forward_request(
     let Some(route_match) = route_match else {
         let response = Response::new_empty(StatusCode(403));
         let _ = req.respond(response);
+        log_access_complete(&request_id, Some(403), 0, started.elapsed(), None);
         return Ok(());
     };
 
     let mut body = Vec::new();
     req.as_reader().read_to_end(&mut body)?;
+    let model = model_from_body(&body);
+    let db_log_started = log_request_start(
+        runtime,
+        config.request_logger.as_ref(),
+        RequestLogStart {
+            id: &request_id,
+            started_at: &timestamp_now(),
+            client_ip: client_ip.as_deref(),
+            method: &method.to_string(),
+            path: &path,
+            query: query.as_deref(),
+            model: model.as_deref(),
+            request_body: &body,
+        },
+    );
 
-    let mut upstream_response = send_upstream(
+    let mut upstream_response = match send_upstream(
         client,
         runtime,
         auth_manager,
@@ -329,13 +423,33 @@ fn forward_request(
         &route_match,
         &req,
         body.clone(),
-    )?;
+    ) {
+        Ok(response) => response,
+        Err(err) => {
+            let error = format!("{err:#}");
+            log_request_complete(
+                runtime,
+                config.request_logger.as_ref(),
+                db_log_started,
+                &request_id,
+                RequestLogCompletion {
+                    completed_at: &timestamp_now(),
+                    upstream_status: None,
+                    latency_ms: started.elapsed().as_millis(),
+                    response_body: b"",
+                    error: Some(&error),
+                },
+            );
+            log_access_complete(&request_id, None, 0, started.elapsed(), Some(&error));
+            return Err(err);
+        }
+    };
 
     if upstream_response.status() == reqwest::StatusCode::UNAUTHORIZED {
         runtime
             .block_on(auth_manager.refresh_token())
             .context("refreshing Codex auth after upstream 401")?;
-        upstream_response = send_upstream(
+        upstream_response = match send_upstream(
             client,
             runtime,
             auth_manager,
@@ -343,10 +457,50 @@ fn forward_request(
             &route_match,
             &req,
             body,
-        )?;
+        ) {
+            Ok(response) => response,
+            Err(err) => {
+                let error = format!("{err:#}");
+                log_request_complete(
+                    runtime,
+                    config.request_logger.as_ref(),
+                    db_log_started,
+                    &request_id,
+                    RequestLogCompletion {
+                        completed_at: &timestamp_now(),
+                        upstream_status: None,
+                        latency_ms: started.elapsed().as_millis(),
+                        response_body: b"",
+                        error: Some(&error),
+                    },
+                );
+                log_access_complete(&request_id, None, 0, started.elapsed(), Some(&error));
+                return Err(err);
+            }
+        };
     }
 
-    respond_with_upstream(req, upstream_response);
+    let outcome = respond_with_upstream(req, upstream_response);
+    log_request_complete(
+        runtime,
+        config.request_logger.as_ref(),
+        db_log_started,
+        &request_id,
+        RequestLogCompletion {
+            completed_at: &timestamp_now(),
+            upstream_status: Some(outcome.status),
+            latency_ms: started.elapsed().as_millis(),
+            response_body: &outcome.response_body,
+            error: outcome.error.as_deref(),
+        },
+    );
+    log_access_complete(
+        &request_id,
+        Some(outcome.status),
+        outcome.response_body.len(),
+        started.elapsed(),
+        outcome.error.as_deref(),
+    );
     Ok(())
 }
 
@@ -494,7 +648,18 @@ fn host_header_for_url(url: &Url) -> Result<HeaderValue> {
     HeaderValue::from_str(&host).context("constructing Host header")
 }
 
-fn respond_with_upstream(req: Request, upstream_response: reqwest::blocking::Response) {
+#[derive(Debug)]
+struct ResponseOutcome {
+    status: u16,
+    response_bytes: usize,
+    response_body: Vec<u8>,
+    error: Option<String>,
+}
+
+fn respond_with_upstream(
+    req: Request,
+    upstream_response: reqwest::blocking::Response,
+) -> ResponseOutcome {
     let status = upstream_response.status();
     let mut response_headers = Vec::new();
     for (name, value) in upstream_response.headers() {
@@ -518,118 +683,41 @@ fn respond_with_upstream(req: Request, upstream_response: reqwest::blocking::Res
         }
     });
 
+    let recorder = BodyRecorder::new();
+    let recording_body = recorder.wrap(upstream_response);
     let response = Response::new(
         StatusCode(status.as_u16()),
         response_headers,
-        Box::new(upstream_response),
+        Box::new(recording_body) as Box<dyn Read + Send>,
         content_length,
         None,
     );
 
-    let _ = req.respond(response);
+    let error = req.respond(response).err().map(|err| err.to_string());
+    let response_body = recorder.bytes();
+    ResponseOutcome {
+        status: status.as_u16(),
+        response_bytes: response_body.len(),
+        response_body,
+        error,
+    }
 }
 
-fn respond_health(req: Request) {
-    let mut response =
-        Response::from_string("{\"status\":\"ok\"}\n").with_status_code(StatusCode(200));
+fn respond_health(req: Request) -> ResponseOutcome {
+    const BODY: &str = "{\"status\":\"ok\"}\n";
+    let mut response = Response::from_string(BODY.to_string()).with_status_code(StatusCode(200));
     if let Ok(header) = Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]) {
         response = response.with_header(header);
     }
-    let _ = req.respond(response);
+    let error = req.respond(response).err().map(|err| err.to_string());
+    ResponseOutcome {
+        status: 200,
+        response_bytes: BODY.len(),
+        response_body: BODY.as_bytes().to_vec(),
+        error,
+    }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use pretty_assertions::assert_eq;
-
-    #[test]
-    fn route_for_allows_only_responses_and_models() {
-        assert_eq!(
-            route_for(&Method::Post, "/v1/responses"),
-            Some(RouteMatch {
-                route: Route::Responses,
-                query: None
-            })
-        );
-        assert_eq!(
-            route_for(&Method::Get, "/v1/models?client_version=1.2.3"),
-            Some(RouteMatch {
-                route: Route::Models,
-                query: Some("client_version=1.2.3".to_string())
-            })
-        );
-        assert!(route_for(&Method::Get, "/v1/responses").is_none());
-        assert!(route_for(&Method::Get, "/health").is_none());
-        assert_eq!(
-            route_for(&Method::Post, "/v1/responses?x=1"),
-            Some(RouteMatch {
-                route: Route::Responses,
-                query: Some("x=1".to_string())
-            })
-        );
-    }
-
-    #[test]
-    fn path_for_url_strips_query() {
-        assert_eq!(path_for_url("/health"), "/health");
-        assert_eq!(path_for_url("/health?verbose=true"), "/health");
-        assert_eq!(
-            path_for_url("/v1/models?client_version=1.2.3"),
-            "/v1/models"
-        );
-    }
-
-    #[test]
-    fn upstream_url_for_appends_incoming_query() {
-        let config = ForwardConfig {
-            responses_url: Url::parse("https://example.com/v1/responses?api-version=2025-04-01")
-                .expect("url"),
-            models_url: Url::parse("https://example.com/v1/models").expect("url"),
-            proxy_auth: ProxyAuth::None,
-        };
-
-        assert_eq!(
-            upstream_url_for(
-                &config,
-                &RouteMatch {
-                    route: Route::Models,
-                    query: Some("client_version=1.2.3".to_string()),
-                }
-            )
-            .as_str(),
-            "https://example.com/v1/models?client_version=1.2.3"
-        );
-        assert_eq!(
-            upstream_url_for(
-                &config,
-                &RouteMatch {
-                    route: Route::Responses,
-                    query: Some("timeout=120".to_string()),
-                }
-            )
-            .as_str(),
-            "https://example.com/v1/responses?api-version=2025-04-01&timeout=120"
-        );
-    }
-
-    #[test]
-    fn non_loopback_requires_proxy_auth_unless_explicitly_allowed() {
-        let listen = "0.0.0.0:8787".parse().expect("socket addr");
-        assert!(require_safe_auth_configuration(listen, &ProxyAuth::None, false).is_err());
-        assert!(require_safe_auth_configuration(listen, &ProxyAuth::None, true).is_ok());
-        assert!(
-            require_safe_auth_configuration(listen, &ProxyAuth::Bearer("token".into()), false)
-                .is_ok()
-        );
-    }
-
-    #[test]
-    fn loopback_can_run_without_proxy_auth() {
-        let listen = "127.0.0.1:8787".parse().expect("socket addr");
-        assert_eq!(
-            require_safe_auth_configuration(listen, &ProxyAuth::None, false).is_ok(),
-            true
-        );
-    }
-}
+#[path = "lib_tests.rs"]
+mod tests;
