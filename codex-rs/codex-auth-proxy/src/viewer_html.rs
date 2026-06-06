@@ -528,6 +528,7 @@ const STYLE: &str = r#"
       font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       font-size: 12px;
       line-height: 1.4;
+      white-space: pre-line;
       box-shadow: 0 8px 24px rgba(15, 23, 42, 0.22);
       pointer-events: none;
       opacity: 0;
