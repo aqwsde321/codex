@@ -96,10 +96,49 @@ const STYLE: &str = r#"
       min-width: 0;
       min-height: 0;
       overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .filters {
+      flex: 0 0 auto;
+      padding: 10px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .search-input {
+      width: 100%;
+      height: 32px;
+      margin-bottom: 8px;
+      padding: 0 9px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #fff;
+      color: var(--text);
+      font: inherit;
+    }
+
+    .search-input:focus {
+      outline: 2px solid #b7ddd8;
+      outline-offset: 0;
+      border-color: var(--accent);
+    }
+
+    .quick-filters {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+
+    .filter-button {
+      height: 26px;
+      padding: 0 8px;
+      font-size: 12px;
     }
 
     .list {
-      height: 100%;
+      flex: 1 1 auto;
+      min-height: 0;
       overflow: auto;
     }
 
@@ -583,7 +622,8 @@ const STYLE: &str = r#"
         min-height: calc(100vh - 52px);
       }
       aside { border-right: 0; border-bottom: 1px solid var(--line); }
-      .list { height: 32vh; }
+      .filters { padding: 8px; }
+      .list { height: 32vh; flex: 0 0 auto; }
       section {
         display: block;
         overflow: visible;
@@ -611,6 +651,16 @@ const BODY: &str = r#"
   </header>
   <main>
     <aside>
+      <div class="filters">
+        <input id="search" class="search-input" type="search" autocomplete="off" placeholder="Search logs">
+        <div class="quick-filters">
+          <button class="filter-button active" type="button" data-filter="all">All</button>
+          <button class="filter-button" type="button" data-filter="errors">Errors</button>
+          <button class="filter-button" type="button" data-filter="slow">Slow</button>
+          <button class="filter-button" type="button" data-filter="tokens">Tokens</button>
+          <button class="filter-button" type="button" data-filter="truncated">Truncated</button>
+        </div>
+      </div>
       <div id="list" class="list"></div>
     </aside>
     <section>

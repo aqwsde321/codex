@@ -125,7 +125,9 @@ codex-auth-proxy viewer \
 The viewer opens on a summary page first. It separates request messages,
 collapsible request JSON, extracted response text, response SSE events, and raw
 SSE. Large request strings and SSE event payloads are rendered only when their
-rows are expanded.
+rows are expanded. The request list includes quick filters for errors, slow
+requests, high token usage, and truncated log rows. The search box scans row
+metadata plus stored request/response body text.
 
 Example query:
 

@@ -11,9 +11,13 @@ pub(crate) const JS: &str = r#"
       derived: null,
       view: "summary",
       eventLimit: DEFAULT_EVENT_LIMIT,
+      filter: "all",
+      search: "",
+      searchTimer: null,
     };
 
     const listEl = document.getElementById("list");
+    const searchEl = document.getElementById("search");
     const statusEl = document.getElementById("status");
     const detailTitleEl = document.getElementById("detail-title");
     const detailMetaEl = document.getElementById("detail-meta");
@@ -21,6 +25,18 @@ pub(crate) const JS: &str = r#"
     const bodyEl = document.getElementById("body");
 
     document.getElementById("refresh").addEventListener("click", () => loadRequests());
+    searchEl.addEventListener("input", () => {
+      state.search = searchEl.value;
+      window.clearTimeout(state.searchTimer);
+      state.searchTimer = window.setTimeout(() => loadRequests(), 250);
+    });
+    document.querySelectorAll(".filter-button").forEach((button) => {
+      button.addEventListener("click", () => {
+        state.filter = button.dataset.filter;
+        document.querySelectorAll(".filter-button").forEach((item) => item.classList.toggle("active", item === button));
+        loadRequests();
+      });
+    });
     document.querySelectorAll(".tab").forEach((button) => {
       button.addEventListener("click", () => {
         state.view = button.dataset.view;
@@ -31,11 +47,16 @@ pub(crate) const JS: &str = r#"
 
     async function loadRequests() {
       statusEl.textContent = "Loading";
-      const requests = await fetchJson("/api/requests");
+      const requests = await fetchJson(requestsUrl());
       state.requests = requests;
       renderList();
-      statusEl.textContent = `${requests.length} rows`;
-      if (!state.selected && requests.length > 0) {
+      statusEl.textContent = `${requests.length} ${hasActiveListFilter() ? "matches" : "rows"}`;
+      if (requests.length === 0) {
+        state.selected = null;
+        state.detail = null;
+        state.derived = null;
+        renderDetail();
+      } else if (!state.selected || !requests.some((request) => request.id === state.selected)) {
         await selectRequest(requests[0].id);
       } else if (state.selected) {
         await selectRequest(state.selected);
@@ -57,7 +78,7 @@ pub(crate) const JS: &str = r#"
         const empty = document.createElement("div");
         empty.className = "empty";
         empty.style.padding = "14px";
-        empty.textContent = "No requests";
+        empty.textContent = hasActiveListFilter() ? "No matching requests" : "No requests";
         listEl.appendChild(empty);
         return;
       }
@@ -82,11 +103,31 @@ pub(crate) const JS: &str = r#"
 
         const meta = document.createElement("div");
         meta.className = "row-meta";
-        meta.textContent = `${request.latency_ms ?? "-"} ms`;
+        meta.textContent = rowMeta(request);
 
         row.append(title, status, sub, meta);
         listEl.appendChild(row);
       }
+    }
+
+    function requestsUrl() {
+      const params = new URLSearchParams();
+      params.set("limit", "200");
+      if (state.filter !== "all") params.set("filter", state.filter);
+      const search = state.search.trim();
+      if (search) params.set("q", search);
+      return `/api/requests?${params.toString()}`;
+    }
+
+    function hasActiveListFilter() {
+      return state.filter !== "all" || state.search.trim().length > 0;
+    }
+
+    function rowMeta(request) {
+      const parts = [`${request.latency_ms ?? "-"} ms`];
+      if (request.total_tokens != null) parts.push(`${formatCount(request.total_tokens)} tok`);
+      if (request.request_body_truncated || request.response_body_truncated) parts.push("truncated");
+      return parts.join(" · ");
     }
 
     function renderDetail() {

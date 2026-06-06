@@ -8,7 +8,9 @@ use anyhow::Context;
 use anyhow::Result;
 use serde::Serialize;
 use serde_json::Value;
+use sqlx::QueryBuilder;
 use sqlx::Row;
+use sqlx::Sqlite;
 use sqlx::SqlitePool;
 use sqlx::sqlite::SqliteConnectOptions;
 use sqlx::sqlite::SqliteJournalMode;
@@ -59,6 +61,32 @@ impl RequestLogBodyLimit {
 struct StoredBody {
     text: String,
     truncated: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RequestLogListQuery {
+    pub(crate) limit: i64,
+    pub(crate) filter: RequestLogFilter,
+    pub(crate) search: Option<String>,
+}
+
+impl Default for RequestLogListQuery {
+    fn default() -> Self {
+        Self {
+            limit: 200,
+            filter: RequestLogFilter::All,
+            search: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RequestLogFilter {
+    All,
+    Errors,
+    Slow,
+    HighTokens,
+    Truncated,
 }
 
 pub(crate) struct RequestLogStart<'a> {
@@ -263,9 +291,12 @@ WHERE id = ?
         Ok(())
     }
 
-    pub(crate) async fn list_recent(&self, limit: i64) -> Result<Vec<RequestLogSummary>> {
-        let limit = limit.clamp(1, 500);
-        sqlx::query_as(
+    pub(crate) async fn list_recent_matching(
+        &self,
+        query: RequestLogListQuery,
+    ) -> Result<Vec<RequestLogSummary>> {
+        let limit = query.limit.clamp(1, 500);
+        let mut builder = QueryBuilder::<Sqlite>::new(
             r#"
 SELECT
   id,
@@ -289,14 +320,79 @@ SELECT
   reasoning_output_tokens,
   error
 FROM proxy_requests
-ORDER BY started_at DESC
-LIMIT ?
 "#,
-        )
-        .bind(limit)
-        .fetch_all(&self.pool)
-        .await
-        .context("listing proxy request log rows")
+        );
+        let mut has_where = false;
+        match query.filter {
+            RequestLogFilter::All => {}
+            RequestLogFilter::Errors => {
+                push_where(&mut builder, &mut has_where);
+                builder.push("(upstream_status >= 400 OR error IS NOT NULL)");
+            }
+            RequestLogFilter::Slow => {
+                push_where(&mut builder, &mut has_where);
+                builder.push("latency_ms >= 30000");
+            }
+            RequestLogFilter::HighTokens => {
+                push_where(&mut builder, &mut has_where);
+                builder.push(
+                    r#"
+(
+  input_tokens >= 100000
+  OR output_tokens >= 8000
+  OR total_tokens >= 120000
+  OR reasoning_output_tokens >= 8000
+)
+"#,
+                );
+            }
+            RequestLogFilter::Truncated => {
+                push_where(&mut builder, &mut has_where);
+                builder.push("(request_body_truncated OR response_body_truncated)");
+            }
+        }
+        if let Some(search) = query.search.as_deref().map(str::trim)
+            && !search.is_empty()
+        {
+            let pattern = format!("%{search}%");
+            push_where(&mut builder, &mut has_where);
+            builder.push(
+                r#"
+(
+  id LIKE
+"#,
+            );
+            builder.push_bind(pattern.clone());
+            builder.push(" OR client_ip LIKE ");
+            builder.push_bind(pattern.clone());
+            builder.push(" OR method LIKE ");
+            builder.push_bind(pattern.clone());
+            builder.push(" OR path LIKE ");
+            builder.push_bind(pattern.clone());
+            builder.push(" OR query LIKE ");
+            builder.push_bind(pattern.clone());
+            builder.push(" OR model LIKE ");
+            builder.push_bind(pattern.clone());
+            builder.push(" OR error LIKE ");
+            builder.push_bind(pattern.clone());
+            builder.push(" OR request_body LIKE ");
+            builder.push_bind(pattern.clone());
+            builder.push(" OR response_body LIKE ");
+            builder.push_bind(pattern);
+            builder.push(")");
+        }
+        builder.push(
+            r#"
+ORDER BY started_at DESC
+LIMIT
+"#,
+        );
+        builder.push_bind(limit);
+        builder
+            .build_query_as()
+            .fetch_all(&self.pool)
+            .await
+            .context("listing proxy request log rows")
     }
 
     pub(crate) async fn get_detail(&self, id: &str) -> Result<Option<RequestLogDetail>> {
@@ -421,6 +517,15 @@ fn stored_body(body: &[u8], limit: Option<RequestLogBodyLimit>) -> StoredBody {
     StoredBody {
         text: String::from_utf8_lossy(stored).into_owned(),
         truncated,
+    }
+}
+
+fn push_where(builder: &mut QueryBuilder<Sqlite>, has_where: &mut bool) {
+    if *has_where {
+        builder.push(" AND ");
+    } else {
+        builder.push(" WHERE ");
+        *has_where = true;
     }
 }
 

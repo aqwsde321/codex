@@ -182,7 +182,13 @@ fn request_logger_lists_recent_rows_and_reads_detail() {
                 .expect("complete older row");
 
             assert_eq!(
-                logger.list_recent(1).await.expect("recent rows"),
+                logger
+                    .list_recent_matching(RequestLogListQuery {
+                        limit: 1,
+                        ..RequestLogListQuery::default()
+                    })
+                    .await
+                    .expect("recent rows"),
                 vec![RequestLogSummary {
                     id: "req-newer".to_string(),
                     started_at: "2000.001".to_string(),
@@ -464,6 +470,97 @@ fn request_logger_truncates_stored_bodies_only() {
 }
 
 #[test]
+fn request_logger_filters_recent_rows() {
+    with_logger(|runtime, logger| {
+        runtime.block_on(async {
+            insert_completed_with(
+                logger,
+                "req-error",
+                "5000.001",
+                Some(500),
+                1,
+                b"request needle",
+                b"",
+            )
+            .await;
+            insert_completed_with(
+                logger,
+                "req-slow",
+                "5000.002",
+                Some(200),
+                30_000,
+                b"{}",
+                b"response needle",
+            )
+            .await;
+            insert_completed_with(
+                logger,
+                "req-tokens",
+                "5000.003",
+                Some(200),
+                1,
+                b"{}",
+                br#"event: response.completed
+data: {"response":{"usage":{"input_tokens":100000,"output_tokens":1,"total_tokens":120001}}}
+
+"#,
+            )
+            .await;
+            insert_completed_with(
+                logger,
+                "req-truncated",
+                "5000.004",
+                Some(200),
+                1,
+                b"{}",
+                b"",
+            )
+            .await;
+            sqlx::query("UPDATE proxy_requests SET request_body_truncated = 1 WHERE id = ?")
+                .bind("req-truncated")
+                .execute(logger.pool())
+                .await
+                .expect("mark truncated");
+
+            assert_eq!(
+                ids_for_query(logger, RequestLogFilter::Errors, /*search*/ None,).await,
+                vec!["req-error".to_string()]
+            );
+            assert_eq!(
+                ids_for_query(logger, RequestLogFilter::Slow, /*search*/ None).await,
+                vec!["req-slow".to_string()]
+            );
+            assert_eq!(
+                ids_for_query(logger, RequestLogFilter::HighTokens, /*search*/ None).await,
+                vec!["req-tokens".to_string()]
+            );
+            assert_eq!(
+                ids_for_query(logger, RequestLogFilter::Truncated, /*search*/ None).await,
+                vec!["req-truncated".to_string()]
+            );
+            assert_eq!(
+                ids_for_query(
+                    logger,
+                    RequestLogFilter::All,
+                    Some("request needle".to_string()),
+                )
+                .await,
+                vec!["req-error".to_string()]
+            );
+            assert_eq!(
+                ids_for_query(
+                    logger,
+                    RequestLogFilter::All,
+                    Some("response needle".to_string()),
+                )
+                .await,
+                vec!["req-slow".to_string()]
+            );
+        });
+    });
+}
+
+#[test]
 fn open_with_retention_prunes_existing_completed_rows() {
     let runtime = Runtime::new().expect("runtime");
     let temp_dir = tempfile::tempdir().expect("temp dir");
@@ -573,11 +670,66 @@ async fn insert_completed(logger: &RequestLogger, id: &str, started_at: &str) {
         .expect("complete row");
 }
 
+async fn insert_completed_with(
+    logger: &RequestLogger,
+    id: &str,
+    started_at: &str,
+    upstream_status: Option<u16>,
+    latency_ms: u128,
+    request_body: &[u8],
+    response_body: &[u8],
+) {
+    logger
+        .insert_start(RequestLogStart {
+            id,
+            started_at,
+            client_ip: None,
+            method: "POST",
+            path: "/v1/responses",
+            query: None,
+            model: Some("gpt-5.5"),
+            request_body,
+        })
+        .await
+        .expect("insert row");
+    logger
+        .complete(
+            id,
+            RequestLogCompletion {
+                completed_at: "9999.001",
+                upstream_status,
+                latency_ms,
+                response_body,
+                error: None,
+            },
+        )
+        .await
+        .expect("complete row");
+}
+
 async fn fetch_ids_by_started_at(logger: &RequestLogger) -> Vec<String> {
     sqlx::query_scalar("SELECT id FROM proxy_requests ORDER BY started_at, id")
         .fetch_all(logger.pool())
         .await
         .expect("fetch ids")
+}
+
+async fn ids_for_query(
+    logger: &RequestLogger,
+    filter: RequestLogFilter,
+    search: Option<String>,
+) -> Vec<String> {
+    logger
+        .list_recent_matching(RequestLogListQuery {
+            limit: 10,
+            filter,
+            search,
+        })
+        .await
+        .expect("filtered rows")
+        .into_iter()
+        .map(|row| row.id)
+        .collect()
 }
 
 fn with_logger(test: impl FnOnce(&Runtime, &RequestLogger)) {

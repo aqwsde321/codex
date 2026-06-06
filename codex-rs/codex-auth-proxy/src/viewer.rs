@@ -14,6 +14,8 @@ use tiny_http::Server;
 use tiny_http::StatusCode;
 use tokio::runtime::Runtime;
 
+use crate::request_log::RequestLogFilter;
+use crate::request_log::RequestLogListQuery;
 use crate::request_log::RequestLogger;
 use crate::viewer_html;
 
@@ -92,8 +94,8 @@ fn handle_viewer_request(runtime: &Runtime, logger: &RequestLogger, req: Request
             respond_text(req, StatusCode(200), &html, "text/html; charset=utf-8");
         }
         "/api/requests" => {
-            let limit = limit_for_url(&url).unwrap_or(200);
-            let rows = runtime.block_on(logger.list_recent(limit))?;
+            let query = list_query_for_url(&url);
+            let rows = runtime.block_on(logger.list_recent_matching(query))?;
             respond_json(req, &rows)?;
         }
         path => {
@@ -129,16 +131,90 @@ fn path_for_url(url: &str) -> &str {
     url.split_once('?').map_or(url, |(path, _query)| path)
 }
 
-fn limit_for_url(url: &str) -> Option<i64> {
-    let query = url.split_once('?')?.1;
-    query.split('&').find_map(|pair| {
-        let (name, value) = pair.split_once('=')?;
-        if name == "limit" {
-            value.parse().ok()
-        } else {
-            None
+fn list_query_for_url(url: &str) -> RequestLogListQuery {
+    let mut query = RequestLogListQuery::default();
+    for (name, value) in query_params_for_url(url) {
+        match name.as_str() {
+            "limit" => {
+                if let Ok(limit) = value.parse() {
+                    query.limit = limit;
+                }
+            }
+            "filter" => query.filter = request_filter_from_str(&value),
+            "q" | "search" if !value.trim().is_empty() => {
+                query.search = Some(value);
+            }
+            _ => {}
         }
-    })
+    }
+    query
+}
+
+fn request_filter_from_str(value: &str) -> RequestLogFilter {
+    match value {
+        "errors" => RequestLogFilter::Errors,
+        "slow" => RequestLogFilter::Slow,
+        "tokens" => RequestLogFilter::HighTokens,
+        "truncated" => RequestLogFilter::Truncated,
+        _ => RequestLogFilter::All,
+    }
+}
+
+fn query_params_for_url(url: &str) -> Vec<(String, String)> {
+    let Some(query) = url.split_once('?').map(|(_path, query)| query) else {
+        return Vec::new();
+    };
+    query
+        .split('&')
+        .filter_map(|pair| {
+            let (name, value) = pair.split_once('=')?;
+            Some((decode_query_component(name), decode_query_component(value)))
+        })
+        .collect()
+}
+
+fn decode_query_component(value: &str) -> String {
+    let mut bytes = Vec::with_capacity(value.len());
+    let mut chars = value.as_bytes().iter().copied();
+    while let Some(byte) = chars.next() {
+        if byte == b'+' {
+            bytes.push(b' ');
+        } else if byte == b'%' {
+            let first = chars.next();
+            let second = chars.next();
+            if let (Some(first), Some(second)) = (first, second)
+                && let Some(decoded) = hex_pair(first, second)
+            {
+                bytes.push(decoded);
+                continue;
+            }
+            bytes.push(byte);
+            if let Some(first) = first {
+                bytes.push(first);
+            }
+            if let Some(second) = second {
+                bytes.push(second);
+            }
+        } else {
+            bytes.push(byte);
+        }
+    }
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
+fn hex_pair(first: u8, second: u8) -> Option<u8> {
+    let high = hex_value(first)?;
+    let low = hex_value(second)?;
+    Some((high << 4) | low)
+}
+
+fn hex_value(value: u8) -> Option<u8> {
+    match value {
+        b'0'..=b'9' => Some(value - b'0'),
+        b'a'..=b'f' => Some(value - b'a' + 10),
+        b'A'..=b'F' => Some(value - b'A' + 10),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -153,9 +229,26 @@ mod tests {
     }
 
     #[test]
-    fn limit_for_url_reads_limit_query_param() {
-        assert_eq!(limit_for_url("/api/requests"), None);
-        assert_eq!(limit_for_url("/api/requests?limit=50"), Some(50));
-        assert_eq!(limit_for_url("/api/requests?x=1&limit=25"), Some(25));
+    fn list_query_for_url_reads_query_params() {
+        assert_eq!(
+            list_query_for_url("/api/requests"),
+            RequestLogListQuery::default()
+        );
+        assert_eq!(
+            list_query_for_url("/api/requests?limit=50&filter=errors&q=hello+world"),
+            RequestLogListQuery {
+                limit: 50,
+                filter: RequestLogFilter::Errors,
+                search: Some("hello world".to_string()),
+            }
+        );
+        assert_eq!(
+            list_query_for_url("/api/requests?x=1&limit=25&filter=tokens&q=foo%2Fbar"),
+            RequestLogListQuery {
+                limit: 25,
+                filter: RequestLogFilter::HighTokens,
+                search: Some("foo/bar".to_string()),
+            }
+        );
     }
 }
