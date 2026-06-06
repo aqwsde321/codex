@@ -4,6 +4,7 @@ use std::io::Read;
 use std::io::Write;
 use std::net::IpAddr;
 use std::net::SocketAddr;
+use std::num::NonZeroU64;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -45,6 +46,7 @@ mod viewer_script;
 
 use body_recorder::BodyRecorder;
 use request_log::RequestLogCompletion;
+use request_log::RequestLogRetention;
 use request_log::RequestLogStart;
 use request_log::RequestLogger;
 use request_log::log_access_complete;
@@ -57,6 +59,7 @@ use request_log::timestamp_now;
 use viewer::ViewerArgs;
 
 const DEFAULT_LISTEN_ADDR: &str = "127.0.0.1:0";
+const DEFAULT_LOG_RETAIN_ROWS: u64 = 1000;
 
 /// CLI arguments for the Codex auth backed Responses proxy.
 #[derive(Debug, Clone, Parser)]
@@ -112,6 +115,10 @@ pub struct Args {
     /// Optional SQLite file where raw proxied request/response bodies are logged.
     #[arg(long, value_name = "FILE")]
     pub log_db: Option<PathBuf>,
+
+    /// Keep only the newest completed rows in the SQLite request log, or "unlimited".
+    #[arg(long, value_name = "ROWS|unlimited", requires = "log_db")]
+    pub log_retain_rows: Option<LogRetainRowsArg>,
 }
 
 #[derive(Debug, Clone, Subcommand)]
@@ -125,6 +132,27 @@ pub enum AuthStoreArg {
     File,
     Keyring,
     Auto,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LogRetainRowsArg {
+    Rows(NonZeroU64),
+    Unlimited,
+}
+
+impl std::str::FromStr for LogRetainRowsArg {
+    type Err = String;
+
+    fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
+        if value.eq_ignore_ascii_case("unlimited") || value.eq_ignore_ascii_case("none") {
+            return Ok(Self::Unlimited);
+        }
+
+        value
+            .parse::<NonZeroU64>()
+            .map(Self::Rows)
+            .map_err(|_| format!("expected a positive row count or `unlimited`, got `{value}`"))
+    }
 }
 
 impl std::fmt::Display for AuthStoreArg {
@@ -191,6 +219,7 @@ pub fn run_main(args: Args) -> Result<()> {
     let proxy_auth = proxy_auth_from_args(&args)?;
     require_safe_auth_configuration(args.listen, &proxy_auth, args.allow_unauthenticated)?;
     let log_db = args.log_db.clone();
+    let log_retain_rows = args.log_retain_rows;
 
     let codex_home = match args.codex_home {
         Some(path) => path,
@@ -206,7 +235,15 @@ pub fn run_main(args: Args) -> Result<()> {
             .context("building Tokio runtime")?,
     );
     let request_logger = match log_db.as_ref() {
-        Some(path) => Some(runtime.block_on(RequestLogger::open(path))?),
+        Some(path) => {
+            let logger = match request_log_retention(log_retain_rows) {
+                Some(retention) => {
+                    runtime.block_on(RequestLogger::open_with_retention(path, retention))?
+                }
+                None => runtime.block_on(RequestLogger::open(path))?,
+            };
+            Some(logger)
+        }
         None => None,
     };
     let auth_manager = runtime.block_on(AuthManager::shared(
@@ -268,6 +305,20 @@ pub fn run_main(args: Args) -> Result<()> {
     }
 
     Err(anyhow!("server stopped unexpectedly"))
+}
+
+fn request_log_retention(arg: Option<LogRetainRowsArg>) -> Option<RequestLogRetention> {
+    match arg.unwrap_or_else(default_log_retain_rows_arg) {
+        LogRetainRowsArg::Rows(rows) => Some(RequestLogRetention::new(rows)),
+        LogRetainRowsArg::Unlimited => None,
+    }
+}
+
+fn default_log_retain_rows_arg() -> LogRetainRowsArg {
+    let Some(rows) = NonZeroU64::new(DEFAULT_LOG_RETAIN_ROWS) else {
+        unreachable!("default log retain rows is non-zero");
+    };
+    LogRetainRowsArg::Rows(rows)
 }
 
 fn default_responses_url() -> String {

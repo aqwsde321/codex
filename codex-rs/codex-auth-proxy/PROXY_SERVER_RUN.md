@@ -54,6 +54,31 @@ cargo run -p codex-auth-proxy -- \
 codex-auth-proxy listening on 0.0.0.0:8787
 ```
 
+`--log-db`를 사용하면 기본으로 SQLite에 최신 완료 요청 1000개만 남깁니다.
+이미 DB에 3000개가 쌓여 있어도 다시 실행하면 서버 시작 시 오래된 완료 row가
+삭제됩니다. 이후 요청이 완료될 때마다 같은 정리가 다시 실행됩니다. 진행 중인
+요청 row는 삭제하지 않습니다.
+
+다른 개수를 유지하려면 `--log-retain-rows`를 추가합니다.
+
+```shell
+cargo run -p codex-auth-proxy -- \
+  --listen 0.0.0.0:8787 \
+  --proxy-token-env CODEX_PROXY_TOKEN \
+  --log-db ./codex-auth-proxy.sqlite \
+  --log-retain-rows 3000
+```
+
+무제한으로 계속 저장하려면 명시적으로 `unlimited`를 사용합니다.
+
+```shell
+cargo run -p codex-auth-proxy -- \
+  --listen 0.0.0.0:8787 \
+  --proxy-token-env CODEX_PROXY_TOKEN \
+  --log-db ./codex-auth-proxy.sqlite \
+  --log-retain-rows unlimited
+```
+
 `--log-db`를 빼면 SQLite 요청/응답 저장 없이 프록시만 실행합니다.
 
 ```shell
@@ -98,6 +123,10 @@ request completed id=... status=200 response_bytes=... latency_ms=... error=-
 `proxy_requests` 테이블을 조회할 수 있습니다. upstream 응답에 token
 `usage`가 포함되면 `input_tokens`, `output_tokens`, `total_tokens`,
 `cached_input_tokens`, `reasoning_output_tokens` 컬럼도 채워집니다.
+
+row 삭제 후에도 SQLite 파일 크기는 바로 줄지 않을 수 있습니다. 실제 디스크
+공간 회수가 필요하면 서버와 viewer를 끈 뒤 SQLite 도구에서 `VACUUM`을
+실행합니다.
 
 ## 로컬 HTML 뷰어 실행
 

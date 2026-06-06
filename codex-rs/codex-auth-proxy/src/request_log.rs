@@ -1,3 +1,4 @@
+use std::num::NonZeroU64;
 use std::path::Path;
 use std::time::Duration;
 use std::time::SystemTime;
@@ -23,6 +24,18 @@ use crate::token_usage::token_usage_from_response_body;
 #[derive(Debug, Clone)]
 pub(crate) struct RequestLogger {
     pool: SqlitePool,
+    retention: Option<RequestLogRetention>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RequestLogRetention {
+    retain_rows: NonZeroU64,
+}
+
+impl RequestLogRetention {
+    pub(crate) fn new(retain_rows: NonZeroU64) -> Self {
+        Self { retain_rows }
+    }
 }
 
 pub(crate) struct RequestLogStart<'a> {
@@ -110,6 +123,17 @@ impl RequestLogDetail {
 
 impl RequestLogger {
     pub(crate) async fn open(path: &Path) -> Result<Self> {
+        Self::open_internal(path, /*retention*/ None).await
+    }
+
+    pub(crate) async fn open_with_retention(
+        path: &Path,
+        retention: RequestLogRetention,
+    ) -> Result<Self> {
+        Self::open_internal(path, Some(retention)).await
+    }
+
+    async fn open_internal(path: &Path, retention: Option<RequestLogRetention>) -> Result<Self> {
         if let Some(parent) = path.parent()
             && !parent.as_os_str().is_empty()
         {
@@ -129,7 +153,9 @@ impl RequestLogger {
             .await
             .with_context(|| format!("opening log DB {}", path.display()))?;
         create_schema(&pool).await?;
-        Ok(Self { pool })
+        let logger = Self { pool, retention };
+        logger.prune_to_retention().await?;
+        Ok(logger)
     }
 
     pub(crate) async fn insert_start(&self, request: RequestLogStart<'_>) -> Result<()> {
@@ -203,6 +229,7 @@ WHERE id = ?
         .execute(&self.pool)
         .await
         .context("updating proxy request log row")?;
+        self.prune_to_retention().await?;
         Ok(())
     }
 
@@ -316,6 +343,33 @@ WHERE id = ?
         .execute(&self.pool)
         .await
         .context("updating proxy request token usage")?;
+        Ok(())
+    }
+
+    async fn prune_to_retention(&self) -> Result<()> {
+        let Some(retention) = self.retention else {
+            return Ok(());
+        };
+        let retain_rows = i64::try_from(retention.retain_rows.get()).unwrap_or(i64::MAX);
+        sqlx::query(
+            r#"
+DELETE FROM proxy_requests
+WHERE id IN (
+  SELECT id
+  FROM (
+    SELECT id
+    FROM proxy_requests
+    WHERE completed_at IS NOT NULL
+    ORDER BY started_at DESC, id DESC
+    LIMIT -1 OFFSET ?
+  )
+)
+"#,
+        )
+        .bind(retain_rows)
+        .execute(&self.pool)
+        .await
+        .context("pruning proxy request log rows")?;
         Ok(())
     }
 }

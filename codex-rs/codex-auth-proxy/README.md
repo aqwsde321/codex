@@ -97,6 +97,14 @@ the raw upstream response body when the response finishes. Streaming responses
 are stored as raw SSE text. If the upstream response includes token `usage`,
 the parsed token counts are stored in dedicated columns.
 
+When `--log-db` is set, the proxy keeps only the newest 1000 completed request
+rows by default. Use `--log-retain-rows ROWS` to choose a different limit, or
+`--log-retain-rows unlimited` to disable pruning explicitly. Pruning runs when
+the proxy opens the database and after each request completes, so an existing
+database with more rows is reduced on the next startup. In-progress rows are
+not deleted. SQLite may not immediately shrink the `.sqlite` file on disk after
+rows are deleted; run `VACUUM` manually if reclaiming disk space is necessary.
+
 The generated SQLite file can be opened directly in tools such as DBeaver.
 For a browser UI, run the local-only viewer:
 

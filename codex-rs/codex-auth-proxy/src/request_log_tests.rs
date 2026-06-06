@@ -1,5 +1,6 @@
 use pretty_assertions::assert_eq;
 use sqlx::Row;
+use std::num::NonZeroU64;
 use tokio::runtime::Runtime;
 
 use super::*;
@@ -386,6 +387,63 @@ WHERE id = ?
 }
 
 #[test]
+fn open_with_retention_prunes_existing_completed_rows() {
+    let runtime = Runtime::new().expect("runtime");
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let db_path = temp_dir.path().join("proxy.sqlite");
+
+    runtime.block_on(async {
+        let logger = RequestLogger::open(&db_path).await.expect("open db");
+        insert_completed(&logger, "req-old", "1000.001").await;
+        insert_completed(&logger, "req-middle", "2000.001").await;
+        insert_completed(&logger, "req-new", "3000.001").await;
+        insert_started(&logger, "req-active", "0001.001").await;
+        logger.pool().close().await;
+
+        let logger = RequestLogger::open_with_retention(
+            &db_path,
+            RequestLogRetention::new(NonZeroU64::new(2).expect("non-zero")),
+        )
+        .await
+        .expect("open with retention");
+
+        assert_eq!(
+            fetch_ids_by_started_at(&logger).await,
+            vec![
+                "req-active".to_string(),
+                "req-middle".to_string(),
+                "req-new".to_string()
+            ]
+        );
+    });
+}
+
+#[test]
+fn complete_prunes_to_retention_limit() {
+    let runtime = Runtime::new().expect("runtime");
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let db_path = temp_dir.path().join("proxy.sqlite");
+
+    runtime.block_on(async {
+        let logger = RequestLogger::open_with_retention(
+            &db_path,
+            RequestLogRetention::new(NonZeroU64::new(2).expect("non-zero")),
+        )
+        .await
+        .expect("open with retention");
+
+        insert_completed(&logger, "req-old", "1000.001").await;
+        insert_completed(&logger, "req-middle", "2000.001").await;
+        insert_completed(&logger, "req-new", "3000.001").await;
+
+        assert_eq!(
+            fetch_ids_by_started_at(&logger).await,
+            vec!["req-middle".to_string(), "req-new".to_string()]
+        );
+    });
+}
+
+#[test]
 fn model_from_body_reads_top_level_model() {
     assert_eq!(
         model_from_body(br#"{"model":"gpt-5.5","input":"hello"}"#),
@@ -393,6 +451,46 @@ fn model_from_body_reads_top_level_model() {
     );
     assert_eq!(model_from_body(br#"{"input":"hello"}"#), None);
     assert_eq!(model_from_body(b"not json"), None);
+}
+
+async fn insert_started(logger: &RequestLogger, id: &str, started_at: &str) {
+    logger
+        .insert_start(RequestLogStart {
+            id,
+            started_at,
+            client_ip: None,
+            method: "POST",
+            path: "/v1/responses",
+            query: None,
+            model: Some("gpt-5.5"),
+            request_body: b"{}",
+        })
+        .await
+        .expect("insert started row");
+}
+
+async fn insert_completed(logger: &RequestLogger, id: &str, started_at: &str) {
+    insert_started(logger, id, started_at).await;
+    logger
+        .complete(
+            id,
+            RequestLogCompletion {
+                completed_at: "9999.001",
+                upstream_status: Some(200),
+                latency_ms: 1,
+                response_body: b"event: done\n\n",
+                error: None,
+            },
+        )
+        .await
+        .expect("complete row");
+}
+
+async fn fetch_ids_by_started_at(logger: &RequestLogger) -> Vec<String> {
+    sqlx::query_scalar("SELECT id FROM proxy_requests ORDER BY started_at, id")
+        .fetch_all(logger.pool())
+        .await
+        .expect("fetch ids")
 }
 
 fn with_logger(test: impl FnOnce(&Runtime, &RequestLogger)) {

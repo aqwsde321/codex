@@ -1,5 +1,7 @@
 use super::*;
+use clap::Parser;
 use pretty_assertions::assert_eq;
+use std::num::NonZeroU64;
 
 #[test]
 fn route_for_allows_only_responses_and_models() {
@@ -88,5 +90,75 @@ fn loopback_can_run_without_proxy_auth() {
     assert_eq!(
         require_safe_auth_configuration(listen, &ProxyAuth::None, false).is_ok(),
         true
+    );
+}
+
+#[test]
+fn args_parse_log_retain_rows() {
+    let args = Args::try_parse_from([
+        "codex-auth-proxy",
+        "--log-db",
+        "proxy.sqlite",
+        "--log-retain-rows",
+        "1000",
+    ])
+    .expect("parse args");
+
+    assert_eq!(
+        args.log_retain_rows,
+        Some(LogRetainRowsArg::Rows(
+            NonZeroU64::new(1000).expect("non-zero")
+        ))
+    );
+}
+
+#[test]
+fn args_parse_unlimited_log_retain_rows() {
+    let args = Args::try_parse_from([
+        "codex-auth-proxy",
+        "--log-db",
+        "proxy.sqlite",
+        "--log-retain-rows",
+        "unlimited",
+    ])
+    .expect("parse args");
+
+    assert_eq!(args.log_retain_rows, Some(LogRetainRowsArg::Unlimited));
+}
+
+#[test]
+fn args_reject_zero_log_retain_rows() {
+    assert!(
+        Args::try_parse_from([
+            "codex-auth-proxy",
+            "--log-db",
+            "proxy.sqlite",
+            "--log-retain-rows",
+            "0",
+        ])
+        .is_err()
+    );
+}
+
+#[test]
+fn args_require_log_db_for_log_retain_rows() {
+    assert!(Args::try_parse_from(["codex-auth-proxy", "--log-retain-rows", "1000"]).is_err());
+}
+
+#[test]
+fn request_log_retention_defaults_to_1000_rows() {
+    assert_eq!(
+        request_log_retention(None),
+        Some(RequestLogRetention::new(
+            NonZeroU64::new(1000).expect("non-zero")
+        ))
+    );
+}
+
+#[test]
+fn request_log_retention_allows_unlimited() {
+    assert_eq!(
+        request_log_retention(Some(LogRetainRowsArg::Unlimited)),
+        None
     );
 }

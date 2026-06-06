@@ -7,6 +7,11 @@ raw request body and raw upstream response body. Streaming responses are stored
 as raw SSE text after the response finishes. Token usage is parsed from upstream
 SSE response events when usage fields are present.
 
+When `--log-db` is set, old completed rows are pruned on startup and after each
+request completion. The default is 1000 completed rows. Use
+`--log-retain-rows ROWS` to choose a different limit or
+`--log-retain-rows unlimited` to disable pruning explicitly.
+
 Current schema:
 
 ```sql
@@ -36,7 +41,6 @@ CREATE TABLE proxy_requests (
 
 Future improvements:
 
-- Add a retention or pruning option so the SQLite file does not grow forever.
 - Add a max body size option for request/response storage.
 - Add optional redaction for known sensitive fields in JSON request bodies.
 - Add a manual smoke test note for opening the generated `.sqlite` file in
