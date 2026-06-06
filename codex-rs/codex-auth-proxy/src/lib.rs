@@ -45,7 +45,9 @@ mod viewer_html;
 mod viewer_script;
 
 use body_recorder::BodyRecorder;
+use request_log::RequestLogBodyLimit;
 use request_log::RequestLogCompletion;
+use request_log::RequestLogOptions;
 use request_log::RequestLogRetention;
 use request_log::RequestLogStart;
 use request_log::RequestLogger;
@@ -60,6 +62,7 @@ use viewer::ViewerArgs;
 
 const DEFAULT_LISTEN_ADDR: &str = "127.0.0.1:0";
 const DEFAULT_LOG_RETAIN_ROWS: u64 = 1000;
+const DEFAULT_LOG_MAX_BODY_BYTES: u64 = 1024 * 1024;
 
 /// CLI arguments for the Codex auth backed Responses proxy.
 #[derive(Debug, Clone, Parser)]
@@ -119,6 +122,10 @@ pub struct Args {
     /// Keep only the newest completed rows in the SQLite request log, or "unlimited".
     #[arg(long, value_name = "ROWS|unlimited", requires = "log_db")]
     pub log_retain_rows: Option<LogRetainRowsArg>,
+
+    /// Maximum request/response body bytes stored per SQLite row, or "unlimited".
+    #[arg(long, value_name = "BYTES|unlimited", requires = "log_db")]
+    pub log_max_body_bytes: Option<LogMaxBodyBytesArg>,
 }
 
 #[derive(Debug, Clone, Subcommand)]
@@ -140,6 +147,12 @@ pub enum LogRetainRowsArg {
     Unlimited,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LogMaxBodyBytesArg {
+    Bytes(NonZeroU64),
+    Unlimited,
+}
+
 impl std::str::FromStr for LogRetainRowsArg {
     type Err = String;
 
@@ -152,6 +165,21 @@ impl std::str::FromStr for LogRetainRowsArg {
             .parse::<NonZeroU64>()
             .map(Self::Rows)
             .map_err(|_| format!("expected a positive row count or `unlimited`, got `{value}`"))
+    }
+}
+
+impl std::str::FromStr for LogMaxBodyBytesArg {
+    type Err = String;
+
+    fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
+        if value.eq_ignore_ascii_case("unlimited") || value.eq_ignore_ascii_case("none") {
+            return Ok(Self::Unlimited);
+        }
+
+        value
+            .parse::<NonZeroU64>()
+            .map(Self::Bytes)
+            .map_err(|_| format!("expected a positive byte count or `unlimited`, got `{value}`"))
     }
 }
 
@@ -220,6 +248,7 @@ pub fn run_main(args: Args) -> Result<()> {
     require_safe_auth_configuration(args.listen, &proxy_auth, args.allow_unauthenticated)?;
     let log_db = args.log_db.clone();
     let log_retain_rows = args.log_retain_rows;
+    let log_max_body_bytes = args.log_max_body_bytes;
 
     let codex_home = match args.codex_home {
         Some(path) => path,
@@ -236,13 +265,11 @@ pub fn run_main(args: Args) -> Result<()> {
     );
     let request_logger = match log_db.as_ref() {
         Some(path) => {
-            let logger = match request_log_retention(log_retain_rows) {
-                Some(retention) => {
-                    runtime.block_on(RequestLogger::open_with_retention(path, retention))?
-                }
-                None => runtime.block_on(RequestLogger::open(path))?,
+            let options = RequestLogOptions {
+                retention: request_log_retention(log_retain_rows),
+                body_limit: request_log_body_limit(log_max_body_bytes),
             };
-            Some(logger)
+            Some(runtime.block_on(RequestLogger::open_with_options(path, options))?)
         }
         None => None,
     };
@@ -319,6 +346,20 @@ fn default_log_retain_rows_arg() -> LogRetainRowsArg {
         unreachable!("default log retain rows is non-zero");
     };
     LogRetainRowsArg::Rows(rows)
+}
+
+fn request_log_body_limit(arg: Option<LogMaxBodyBytesArg>) -> Option<RequestLogBodyLimit> {
+    match arg.unwrap_or_else(default_log_max_body_bytes_arg) {
+        LogMaxBodyBytesArg::Bytes(bytes) => Some(RequestLogBodyLimit::new(bytes)),
+        LogMaxBodyBytesArg::Unlimited => None,
+    }
+}
+
+fn default_log_max_body_bytes_arg() -> LogMaxBodyBytesArg {
+    let Some(bytes) = NonZeroU64::new(DEFAULT_LOG_MAX_BODY_BYTES) else {
+        unreachable!("default log max body bytes is non-zero");
+    };
+    LogMaxBodyBytesArg::Bytes(bytes)
 }
 
 fn default_responses_url() -> String {

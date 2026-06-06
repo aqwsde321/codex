@@ -105,6 +105,14 @@ database with more rows is reduced on the next startup. In-progress rows are
 not deleted. SQLite may not immediately shrink the `.sqlite` file on disk after
 rows are deleted; run `VACUUM` manually if reclaiming disk space is necessary.
 
+The proxy also stores at most 1 MiB of request body text and 1 MiB of response
+body text per row by default. The `request_bytes` and `response_bytes` columns
+keep the original upstream body sizes, while `request_body_truncated` and
+`response_body_truncated` indicate whether the stored SQLite text was cut. Use
+`--log-max-body-bytes BYTES` to choose a different per-body limit, or
+`--log-max-body-bytes unlimited` to store full bodies explicitly. Upstream
+traffic is never truncated; only the SQLite copy is limited.
+
 The generated SQLite file can be opened directly in tools such as DBeaver.
 For a browser UI, run the local-only viewer:
 
@@ -133,6 +141,8 @@ SELECT
   latency_ms,
   request_bytes,
   response_bytes,
+  request_body_truncated,
+  response_body_truncated,
   input_tokens,
   output_tokens,
   total_tokens,

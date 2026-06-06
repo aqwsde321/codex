@@ -146,6 +146,58 @@ fn args_require_log_db_for_log_retain_rows() {
 }
 
 #[test]
+fn args_parse_log_max_body_bytes() {
+    let args = Args::try_parse_from([
+        "codex-auth-proxy",
+        "--log-db",
+        "proxy.sqlite",
+        "--log-max-body-bytes",
+        "1048576",
+    ])
+    .expect("parse args");
+
+    assert_eq!(
+        args.log_max_body_bytes,
+        Some(LogMaxBodyBytesArg::Bytes(
+            NonZeroU64::new(1_048_576).expect("non-zero")
+        ))
+    );
+}
+
+#[test]
+fn args_parse_unlimited_log_max_body_bytes() {
+    let args = Args::try_parse_from([
+        "codex-auth-proxy",
+        "--log-db",
+        "proxy.sqlite",
+        "--log-max-body-bytes",
+        "unlimited",
+    ])
+    .expect("parse args");
+
+    assert_eq!(args.log_max_body_bytes, Some(LogMaxBodyBytesArg::Unlimited));
+}
+
+#[test]
+fn args_reject_zero_log_max_body_bytes() {
+    assert!(
+        Args::try_parse_from([
+            "codex-auth-proxy",
+            "--log-db",
+            "proxy.sqlite",
+            "--log-max-body-bytes",
+            "0",
+        ])
+        .is_err()
+    );
+}
+
+#[test]
+fn args_require_log_db_for_log_max_body_bytes() {
+    assert!(Args::try_parse_from(["codex-auth-proxy", "--log-max-body-bytes", "1024"]).is_err());
+}
+
+#[test]
 fn request_log_retention_defaults_to_1000_rows() {
     assert_eq!(
         request_log_retention(None),
@@ -159,6 +211,24 @@ fn request_log_retention_defaults_to_1000_rows() {
 fn request_log_retention_allows_unlimited() {
     assert_eq!(
         request_log_retention(Some(LogRetainRowsArg::Unlimited)),
+        None
+    );
+}
+
+#[test]
+fn request_log_body_limit_defaults_to_1mb() {
+    assert_eq!(
+        request_log_body_limit(None),
+        Some(RequestLogBodyLimit::new(
+            NonZeroU64::new(1_048_576).expect("non-zero")
+        ))
+    );
+}
+
+#[test]
+fn request_log_body_limit_allows_unlimited() {
+    assert_eq!(
+        request_log_body_limit(Some(LogMaxBodyBytesArg::Unlimited)),
         None
     );
 }

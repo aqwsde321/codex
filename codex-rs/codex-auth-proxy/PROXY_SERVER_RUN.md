@@ -59,6 +59,12 @@ codex-auth-proxy listening on 0.0.0.0:8787
 삭제됩니다. 이후 요청이 완료될 때마다 같은 정리가 다시 실행됩니다. 진행 중인
 요청 row는 삭제하지 않습니다.
 
+또한 기본으로 request body와 response body는 각각 최대 1 MiB만 SQLite에
+저장합니다. upstream으로 보내고 받는 실제 요청/응답은 자르지 않고, DB에
+저장하는 사본만 제한합니다. 원본 크기는 `request_bytes`, `response_bytes`에
+남고, 잘렸는지는 `request_body_truncated`, `response_body_truncated`로
+확인합니다.
+
 다른 개수를 유지하려면 `--log-retain-rows`를 추가합니다.
 
 ```shell
@@ -77,6 +83,26 @@ cargo run -p codex-auth-proxy -- \
   --proxy-token-env CODEX_PROXY_TOKEN \
   --log-db ./codex-auth-proxy.sqlite \
   --log-retain-rows unlimited
+```
+
+body 저장 크기 제한을 바꾸려면 `--log-max-body-bytes`를 추가합니다.
+
+```shell
+cargo run -p codex-auth-proxy -- \
+  --listen 0.0.0.0:8787 \
+  --proxy-token-env CODEX_PROXY_TOKEN \
+  --log-db ./codex-auth-proxy.sqlite \
+  --log-max-body-bytes 2097152
+```
+
+body도 무제한 저장하려면 명시적으로 `unlimited`를 사용합니다.
+
+```shell
+cargo run -p codex-auth-proxy -- \
+  --listen 0.0.0.0:8787 \
+  --proxy-token-env CODEX_PROXY_TOKEN \
+  --log-db ./codex-auth-proxy.sqlite \
+  --log-max-body-bytes unlimited
 ```
 
 `--log-db`를 빼면 SQLite 요청/응답 저장 없이 프록시만 실행합니다.
@@ -123,6 +149,8 @@ request completed id=... status=200 response_bytes=... latency_ms=... error=-
 `proxy_requests` 테이블을 조회할 수 있습니다. upstream 응답에 token
 `usage`가 포함되면 `input_tokens`, `output_tokens`, `total_tokens`,
 `cached_input_tokens`, `reasoning_output_tokens` 컬럼도 채워집니다.
+body 저장이 잘린 row는 `request_body_truncated`,
+`response_body_truncated` 컬럼이 `true`로 표시됩니다.
 
 row 삭제 후에도 SQLite 파일 크기는 바로 줄지 않을 수 있습니다. 실제 디스크
 공간 회수가 필요하면 서버와 viewer를 끈 뒤 SQLite 도구에서 `VACUUM`을

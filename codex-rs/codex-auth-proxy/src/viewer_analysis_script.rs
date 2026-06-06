@@ -48,8 +48,10 @@ pub(crate) const JS: &str = r#"
       }
       addAttention(items, latencySeverity(detail.latency_ms), "Slow response", "The upstream response took longer than the local threshold.");
       addAttention(items, countSeverity(request.toolOutputCount || 0, THRESHOLDS.toolOutputsWarning, THRESHOLDS.toolOutputsCritical), "Many tool outputs", "Many tool outputs were sent back to the model. Check Request Messages for repeated shell output, file dumps, or test logs.");
-      addAttention(items, bytesSeverity(detail.request_bytes), "Large request body", "The raw request body is large and can grow the SQLite file.");
-      addAttention(items, bytesSeverity(detail.response_bytes), "Large response body", "The raw response body is large and can grow the SQLite file.");
+      addAttention(items, detail.request_body_truncated ? "warning" : null, "Request log truncated", "The proxy stored only the first bytes of this request body in SQLite. Upstream traffic was not truncated.");
+      addAttention(items, detail.response_body_truncated ? "warning" : null, "Response log truncated", "The proxy stored only the first bytes of this response body in SQLite. Upstream traffic was not truncated.");
+      addAttention(items, bytesSeverity(detail.request_bytes), "Large request body", "The original request body is large. SQLite storage may be truncated depending on the proxy log body limit.");
+      addAttention(items, bytesSeverity(detail.response_bytes), "Large response body", "The original response body is large. SQLite storage may be truncated depending on the proxy log body limit.");
       addAttention(items, countSeverity(derived.events.length, THRESHOLDS.eventsWarning, THRESHOLDS.eventsCritical), "Many SSE events", "The response contains many stream events. Use Response Events to inspect where output grew.");
       addAttention(items, tokenUsageSeverity(detail), "Large context/cost", "Reported token usage is high. Use this as a cost/context signal, then inspect Request Messages to find the cause.");
       addAttention(items, cacheSeverity(detail.input_tokens, detail.cached_input_tokens), "Low cache", "Input token usage is high but cached input ratio is low.");

@@ -12,6 +12,10 @@ request completion. The default is 1000 completed rows. Use
 `--log-retain-rows ROWS` to choose a different limit or
 `--log-retain-rows unlimited` to disable pruning explicitly.
 
+Stored request/response body text is capped at 1 MiB per body by default. Use
+`--log-max-body-bytes BYTES` to choose a different limit or
+`--log-max-body-bytes unlimited` to disable body truncation explicitly.
+
 Current schema:
 
 ```sql
@@ -28,6 +32,8 @@ CREATE TABLE proxy_requests (
   latency_ms INTEGER,
   request_bytes INTEGER,
   response_bytes INTEGER,
+  request_body_truncated INTEGER NOT NULL DEFAULT 0,
+  response_body_truncated INTEGER NOT NULL DEFAULT 0,
   input_tokens INTEGER,
   output_tokens INTEGER,
   total_tokens INTEGER,
@@ -41,7 +47,6 @@ CREATE TABLE proxy_requests (
 
 Future improvements:
 
-- Add a max body size option for request/response storage.
 - Add optional redaction for known sensitive fields in JSON request bodies.
 - Add a manual smoke test note for opening the generated `.sqlite` file in
   DBeaver.

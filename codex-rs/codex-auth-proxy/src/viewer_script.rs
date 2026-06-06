@@ -111,12 +111,24 @@ pub(crate) const JS: &str = r#"
       } else if (state.view === "messages") {
         renderRequestMessages(derived.requestInfo);
       } else if (state.view === "request") {
+        if (detail.request_body_truncated) {
+          bodyEl.append(truncationNotice("Request body", detail.request_bytes));
+        }
         renderJsonOrText(derived.requestJson, detail.request_body || "", "request");
       } else if (state.view === "text") {
+        if (detail.response_body_truncated) {
+          bodyEl.append(truncationNotice("Response body", detail.response_bytes));
+        }
         bodyEl.append(textBlock(derived.responseText || "(empty)"));
       } else if (state.view === "events") {
+        if (detail.response_body_truncated) {
+          bodyEl.append(truncationNotice("Response body", detail.response_bytes));
+        }
         renderSseEvents(derived.events);
       } else if (state.view === "raw") {
+        if (detail.response_body_truncated) {
+          bodyEl.append(truncationNotice("Response body", detail.response_bytes));
+        }
         bodyEl.append(textBlock(detail.response_body || ""));
       } else {
         bodyEl.append(textBlock(detail.error || ""));
@@ -342,8 +354,14 @@ pub(crate) const JS: &str = r#"
             metric(
               "Request size",
               formatBytes(detail.request_bytes),
-              "Raw request body size stored in SQLite. Large values can make DB files grow quickly.",
+              "Original request body size seen by the proxy before any SQLite storage truncation.",
               bytesSeverity(detail.request_bytes)
+            ),
+            metric(
+              "Request stored",
+              storedBodyStatus(detail.request_body_truncated),
+              "Whether the request body text stored in SQLite was truncated by the proxy log body limit.",
+              detail.request_body_truncated ? "warning" : null
             ),
           ]),
           chipsBlock("Tool names", request.tools.map((tool) => tool.name)),
@@ -376,8 +394,14 @@ pub(crate) const JS: &str = r#"
             metric(
               "Response size",
               formatBytes(detail.response_bytes),
-              "Raw response body size stored in SQLite.",
+              "Original response body size seen by the proxy before any SQLite storage truncation.",
               bytesSeverity(detail.response_bytes)
+            ),
+            metric(
+              "Response stored",
+              storedBodyStatus(detail.response_body_truncated),
+              "Whether the response body text stored in SQLite was truncated by the proxy log body limit.",
+              detail.response_body_truncated ? "warning" : null
             ),
             metric(
               "Input tokens",
@@ -766,6 +790,14 @@ pub(crate) const JS: &str = r#"
       item.className = "notice";
       item.textContent = value;
       return item;
+    }
+
+    function truncationNotice(label, originalBytes) {
+      return notice(`${label} stored in SQLite was truncated. Original body size: ${formatBytes(originalBytes)}. Upstream traffic was not truncated.`);
+    }
+
+    function storedBodyStatus(truncated) {
+      return truncated ? "truncated" : "complete";
     }
 
     function labelSpan(label) {

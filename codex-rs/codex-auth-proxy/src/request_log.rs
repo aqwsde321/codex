@@ -25,6 +25,13 @@ use crate::token_usage::token_usage_from_response_body;
 pub(crate) struct RequestLogger {
     pool: SqlitePool,
     retention: Option<RequestLogRetention>,
+    body_limit: Option<RequestLogBodyLimit>,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct RequestLogOptions {
+    pub(crate) retention: Option<RequestLogRetention>,
+    pub(crate) body_limit: Option<RequestLogBodyLimit>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,6 +43,22 @@ impl RequestLogRetention {
     pub(crate) fn new(retain_rows: NonZeroU64) -> Self {
         Self { retain_rows }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RequestLogBodyLimit {
+    max_bytes: NonZeroU64,
+}
+
+impl RequestLogBodyLimit {
+    pub(crate) fn new(max_bytes: NonZeroU64) -> Self {
+        Self { max_bytes }
+    }
+}
+
+struct StoredBody {
+    text: String,
+    truncated: bool,
 }
 
 pub(crate) struct RequestLogStart<'a> {
@@ -71,6 +94,8 @@ pub(crate) struct RequestLogSummary {
     pub(crate) latency_ms: Option<i64>,
     pub(crate) request_bytes: Option<i64>,
     pub(crate) response_bytes: Option<i64>,
+    pub(crate) request_body_truncated: bool,
+    pub(crate) response_body_truncated: bool,
     pub(crate) input_tokens: Option<i64>,
     pub(crate) output_tokens: Option<i64>,
     pub(crate) total_tokens: Option<i64>,
@@ -93,6 +118,8 @@ pub(crate) struct RequestLogDetail {
     pub(crate) latency_ms: Option<i64>,
     pub(crate) request_bytes: Option<i64>,
     pub(crate) response_bytes: Option<i64>,
+    pub(crate) request_body_truncated: bool,
+    pub(crate) response_body_truncated: bool,
     pub(crate) input_tokens: Option<i64>,
     pub(crate) output_tokens: Option<i64>,
     pub(crate) total_tokens: Option<i64>,
@@ -123,17 +150,10 @@ impl RequestLogDetail {
 
 impl RequestLogger {
     pub(crate) async fn open(path: &Path) -> Result<Self> {
-        Self::open_internal(path, /*retention*/ None).await
+        Self::open_with_options(path, RequestLogOptions::default()).await
     }
 
-    pub(crate) async fn open_with_retention(
-        path: &Path,
-        retention: RequestLogRetention,
-    ) -> Result<Self> {
-        Self::open_internal(path, Some(retention)).await
-    }
-
-    async fn open_internal(path: &Path, retention: Option<RequestLogRetention>) -> Result<Self> {
+    pub(crate) async fn open_with_options(path: &Path, options: RequestLogOptions) -> Result<Self> {
         if let Some(parent) = path.parent()
             && !parent.as_os_str().is_empty()
         {
@@ -141,7 +161,7 @@ impl RequestLogger {
                 .with_context(|| format!("creating log DB parent {}", parent.display()))?;
         }
 
-        let options = SqliteConnectOptions::new()
+        let connect_options = SqliteConnectOptions::new()
             .filename(path)
             .create_if_missing(true)
             .journal_mode(SqliteJournalMode::Wal)
@@ -149,16 +169,21 @@ impl RequestLogger {
             .busy_timeout(Duration::from_secs(5));
         let pool = SqlitePoolOptions::new()
             .max_connections(5)
-            .connect_with(options)
+            .connect_with(connect_options)
             .await
             .with_context(|| format!("opening log DB {}", path.display()))?;
         create_schema(&pool).await?;
-        let logger = Self { pool, retention };
+        let logger = Self {
+            pool,
+            retention: options.retention,
+            body_limit: options.body_limit,
+        };
         logger.prune_to_retention().await?;
         Ok(logger)
     }
 
     pub(crate) async fn insert_start(&self, request: RequestLogStart<'_>) -> Result<()> {
+        let stored_request_body = stored_body(request.request_body, self.body_limit);
         sqlx::query(
             r#"
 INSERT INTO proxy_requests (
@@ -170,9 +195,10 @@ INSERT INTO proxy_requests (
   query,
   model,
   request_bytes,
-  request_body
+  request_body,
+  request_body_truncated
 )
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 "#,
         )
         .bind(request.id)
@@ -183,7 +209,8 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         .bind(request.query)
         .bind(request.model)
         .bind(request.request_body.len() as i64)
-        .bind(String::from_utf8_lossy(request.request_body).into_owned())
+        .bind(stored_request_body.text)
+        .bind(stored_request_body.truncated)
         .execute(&self.pool)
         .await
         .context("inserting proxy request log row")?;
@@ -196,6 +223,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         completion: RequestLogCompletion<'_>,
     ) -> Result<()> {
         let usage = token_usage_from_response_body(completion.response_body);
+        let stored_response_body = stored_body(completion.response_body, self.body_limit);
         sqlx::query(
             r#"
 UPDATE proxy_requests
@@ -205,6 +233,7 @@ SET
   latency_ms = ?,
   response_bytes = ?,
   response_body = ?,
+  response_body_truncated = ?,
   input_tokens = ?,
   output_tokens = ?,
   total_tokens = ?,
@@ -218,7 +247,8 @@ WHERE id = ?
         .bind(completion.upstream_status.map(i64::from))
         .bind(completion.latency_ms as i64)
         .bind(completion.response_body.len() as i64)
-        .bind(String::from_utf8_lossy(completion.response_body).into_owned())
+        .bind(stored_response_body.text)
+        .bind(stored_response_body.truncated)
         .bind(usage.input_tokens)
         .bind(usage.output_tokens)
         .bind(usage.total_tokens)
@@ -250,6 +280,8 @@ SELECT
   latency_ms,
   request_bytes,
   response_bytes,
+  request_body_truncated,
+  response_body_truncated,
   input_tokens,
   output_tokens,
   total_tokens,
@@ -283,6 +315,8 @@ SELECT
   latency_ms,
   request_bytes,
   response_bytes,
+  request_body_truncated,
+  response_body_truncated,
   input_tokens,
   output_tokens,
   total_tokens,
@@ -374,6 +408,22 @@ WHERE id IN (
     }
 }
 
+fn stored_body(body: &[u8], limit: Option<RequestLogBodyLimit>) -> StoredBody {
+    let Some(limit) = limit else {
+        return StoredBody {
+            text: String::from_utf8_lossy(body).into_owned(),
+            truncated: false,
+        };
+    };
+    let max_bytes = usize::try_from(limit.max_bytes.get()).unwrap_or(usize::MAX);
+    let truncated = body.len() > max_bytes;
+    let stored = if truncated { &body[..max_bytes] } else { body };
+    StoredBody {
+        text: String::from_utf8_lossy(stored).into_owned(),
+        truncated,
+    }
+}
+
 async fn create_schema(pool: &SqlitePool) -> Result<()> {
     sqlx::query(
         r#"
@@ -390,6 +440,8 @@ CREATE TABLE IF NOT EXISTS proxy_requests (
   latency_ms INTEGER,
   request_bytes INTEGER,
   response_bytes INTEGER,
+  request_body_truncated INTEGER NOT NULL DEFAULT 0,
+  response_body_truncated INTEGER NOT NULL DEFAULT 0,
   request_body TEXT,
   response_body TEXT,
   error TEXT
@@ -404,6 +456,13 @@ CREATE TABLE IF NOT EXISTS proxy_requests (
     ensure_column(pool, "total_tokens", "INTEGER").await?;
     ensure_column(pool, "cached_input_tokens", "INTEGER").await?;
     ensure_column(pool, "reasoning_output_tokens", "INTEGER").await?;
+    ensure_column(pool, "request_body_truncated", "INTEGER NOT NULL DEFAULT 0").await?;
+    ensure_column(
+        pool,
+        "response_body_truncated",
+        "INTEGER NOT NULL DEFAULT 0",
+    )
+    .await?;
     Ok(())
 }
 

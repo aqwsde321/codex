@@ -19,6 +19,8 @@ struct LoggedRequest {
     latency_ms: Option<i64>,
     request_bytes: Option<i64>,
     response_bytes: Option<i64>,
+    request_body_truncated: bool,
+    response_body_truncated: bool,
     input_tokens: Option<i64>,
     output_tokens: Option<i64>,
     total_tokens: Option<i64>,
@@ -78,6 +80,8 @@ data: {"response":{"usage":{"input_tokens":120,"output_tokens":30,"total_tokens"
                     latency_ms: Some(122),
                     request_bytes: Some(35),
                     response_bytes: Some(207),
+                    request_body_truncated: false,
+                    response_body_truncated: false,
                     input_tokens: Some(120),
                     output_tokens: Some(30),
                     total_tokens: Some(150),
@@ -192,6 +196,8 @@ fn request_logger_lists_recent_rows_and_reads_detail() {
                     latency_ms: None,
                     request_bytes: Some(0),
                     response_bytes: None,
+                    request_body_truncated: false,
+                    response_body_truncated: false,
                     input_tokens: None,
                     output_tokens: None,
                     total_tokens: None,
@@ -216,6 +222,8 @@ fn request_logger_lists_recent_rows_and_reads_detail() {
                     latency_ms: Some(99),
                     request_bytes: Some(2),
                     response_bytes: Some(13),
+                    request_body_truncated: false,
+                    response_body_truncated: false,
                     input_tokens: None,
                     output_tokens: None,
                     total_tokens: None,
@@ -308,6 +316,8 @@ CREATE TABLE proxy_requests (
         assert!(column_names.contains(&"total_tokens".to_string()));
         assert!(column_names.contains(&"cached_input_tokens".to_string()));
         assert!(column_names.contains(&"reasoning_output_tokens".to_string()));
+        assert!(column_names.contains(&"request_body_truncated".to_string()));
+        assert!(column_names.contains(&"response_body_truncated".to_string()));
     });
 }
 
@@ -387,6 +397,73 @@ WHERE id = ?
 }
 
 #[test]
+fn request_logger_truncates_stored_bodies_only() {
+    let runtime = Runtime::new().expect("runtime");
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let db_path = temp_dir.path().join("proxy.sqlite");
+
+    runtime.block_on(async {
+        let logger = RequestLogger::open_with_options(
+            &db_path,
+            RequestLogOptions {
+                retention: None,
+                body_limit: Some(RequestLogBodyLimit::new(
+                    NonZeroU64::new(5).expect("non-zero"),
+                )),
+            },
+        )
+        .await
+        .expect("request logger");
+        logger
+            .insert_start(RequestLogStart {
+                id: "req-truncated",
+                started_at: "4000.001",
+                client_ip: None,
+                method: "POST",
+                path: "/v1/responses",
+                query: None,
+                model: Some("gpt-5.5"),
+                request_body: b"abcdefghi",
+            })
+            .await
+            .expect("insert request log");
+        logger
+            .complete(
+                "req-truncated",
+                RequestLogCompletion {
+                    completed_at: "4000.002",
+                    upstream_status: Some(200),
+                    latency_ms: 1,
+                    response_body: b"0123456789",
+                    error: None,
+                },
+            )
+            .await
+            .expect("complete request log");
+
+        let row = fetch_request(&logger, "req-truncated").await;
+        assert_eq!(
+            (
+                row.request_bytes,
+                row.request_body,
+                row.request_body_truncated,
+                row.response_bytes,
+                row.response_body,
+                row.response_body_truncated,
+            ),
+            (
+                Some(9),
+                Some("abcde".to_string()),
+                true,
+                Some(10),
+                Some("01234".to_string()),
+                true,
+            )
+        );
+    });
+}
+
+#[test]
 fn open_with_retention_prunes_existing_completed_rows() {
     let runtime = Runtime::new().expect("runtime");
     let temp_dir = tempfile::tempdir().expect("temp dir");
@@ -400,9 +477,14 @@ fn open_with_retention_prunes_existing_completed_rows() {
         insert_started(&logger, "req-active", "0001.001").await;
         logger.pool().close().await;
 
-        let logger = RequestLogger::open_with_retention(
+        let logger = RequestLogger::open_with_options(
             &db_path,
-            RequestLogRetention::new(NonZeroU64::new(2).expect("non-zero")),
+            RequestLogOptions {
+                retention: Some(RequestLogRetention::new(
+                    NonZeroU64::new(2).expect("non-zero"),
+                )),
+                body_limit: None,
+            },
         )
         .await
         .expect("open with retention");
@@ -425,9 +507,14 @@ fn complete_prunes_to_retention_limit() {
     let db_path = temp_dir.path().join("proxy.sqlite");
 
     runtime.block_on(async {
-        let logger = RequestLogger::open_with_retention(
+        let logger = RequestLogger::open_with_options(
             &db_path,
-            RequestLogRetention::new(NonZeroU64::new(2).expect("non-zero")),
+            RequestLogOptions {
+                retention: Some(RequestLogRetention::new(
+                    NonZeroU64::new(2).expect("non-zero"),
+                )),
+                body_limit: None,
+            },
         )
         .await
         .expect("open with retention");
@@ -520,6 +607,8 @@ SELECT
   latency_ms,
   request_bytes,
   response_bytes,
+  request_body_truncated,
+  response_body_truncated,
   input_tokens,
   output_tokens,
   total_tokens,
@@ -550,6 +639,8 @@ WHERE id = ?
         latency_ms: row.get("latency_ms"),
         request_bytes: row.get("request_bytes"),
         response_bytes: row.get("response_bytes"),
+        request_body_truncated: row.get("request_body_truncated"),
+        response_body_truncated: row.get("response_body_truncated"),
         input_tokens: row.get("input_tokens"),
         output_tokens: row.get("output_tokens"),
         total_tokens: row.get("total_tokens"),
