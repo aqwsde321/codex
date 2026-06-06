@@ -14,6 +14,8 @@ pub(crate) const JS: &str = r#"
       reasoningTokensCritical: 20000,
       toolOutputsWarning: 100,
       toolOutputsCritical: 250,
+      toolOutputCharsWarning: 100000,
+      toolOutputCharsCritical: 500000,
       eventsWarning: 500,
       eventsCritical: 1000,
       lowCacheMinInputTokens: 20000,
@@ -48,6 +50,7 @@ pub(crate) const JS: &str = r#"
       }
       addAttention(items, latencySeverity(detail.latency_ms), "Slow response", "The upstream response took longer than the local threshold.");
       addAttention(items, countSeverity(request.toolOutputCount || 0, THRESHOLDS.toolOutputsWarning, THRESHOLDS.toolOutputsCritical), "Many tool outputs", "Many tool outputs were sent back to the model. Check Request Messages for repeated shell output, file dumps, or test logs.");
+      addAttention(items, charsSeverity(request.toolOutputChars || 0), "Large tool output", "Stored tool output text is large. Check Tool I/O for the biggest outputs and commands.");
       addAttention(items, detail.request_body_truncated ? "warning" : null, "Request log truncated", "The proxy stored only the first bytes of this request body in SQLite. Upstream traffic was not truncated.");
       addAttention(items, detail.response_body_truncated ? "warning" : null, "Response log truncated", "The proxy stored only the first bytes of this response body in SQLite. Upstream traffic was not truncated.");
       addAttention(items, bytesSeverity(detail.request_bytes), "Large request body", "The original request body is large. SQLite storage may be truncated depending on the proxy log body limit.");
@@ -168,6 +171,13 @@ pub(crate) const JS: &str = r#"
       if (value == null) return null;
       if (value >= THRESHOLDS.bytesCritical) return "critical";
       if (value >= THRESHOLDS.bytesWarning) return "warning";
+      return null;
+    }
+
+    function charsSeverity(value) {
+      if (value == null) return null;
+      if (value >= THRESHOLDS.toolOutputCharsCritical) return "critical";
+      if (value >= THRESHOLDS.toolOutputCharsWarning) return "warning";
       return null;
     }
 

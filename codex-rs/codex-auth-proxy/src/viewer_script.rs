@@ -151,6 +151,8 @@ pub(crate) const JS: &str = r#"
         renderSummary(detail, derived);
       } else if (state.view === "messages") {
         renderRequestMessages(derived.requestInfo);
+      } else if (state.view === "tools") {
+        renderToolIo(derived.requestInfo, derived.responseInfo);
       } else if (state.view === "request") {
         if (detail.request_body_truncated) {
           bodyEl.append(truncationNotice("Request body", detail.request_bytes));
@@ -218,7 +220,12 @@ pub(crate) const JS: &str = r#"
       const latest = [...messages].reverse().find((item) => item.text);
       const latestUser = [...messages].reverse().find((item) => item.role === "user" && item.text);
       const toolCalls = input.map(describeToolCall).filter(Boolean);
-      const toolOutputs = messages.filter((item) => item.kind.includes("output"));
+      const callNames = new Map(toolCalls.filter((call) => call.callId).map((call) => [call.callId, call.name]));
+      const toolOutputMessages = messages.filter(isToolOutputMessage);
+      const toolOutputs = toolOutputMessages.map((item) => ({
+        ...item,
+        name: callNames.get(item.callId) || item.name || item.kind,
+      })).sort((left, right) => right.chars - left.chars);
       return {
         parsed: true,
         model: request.model || "",
@@ -230,8 +237,10 @@ pub(crate) const JS: &str = r#"
         latestText: latest?.text || "",
         latestUserText: latestUser?.text || "",
         toolCalls,
-        latestToolOutputText: [...toolOutputs].reverse().find((item) => item.text)?.text || "",
+        toolOutputs,
+        latestToolOutputText: [...toolOutputMessages].reverse().find((item) => item.text)?.text || "",
         toolOutputCount: toolOutputs.length,
+        toolOutputChars: toolOutputs.reduce((sum, item) => sum + item.chars, 0),
       };
     }
 
@@ -250,9 +259,15 @@ pub(crate) const JS: &str = r#"
         index: index + 1,
         role: role || "-",
         kind,
+        name: item && typeof item === "object" ? item.name || "" : "",
+        callId: item && typeof item === "object" ? item.call_id || "" : "",
         chars: text.length,
         text,
       };
+    }
+
+    function isToolOutputMessage(item) {
+      return item.kind.includes("output") || item.kind.includes("call_result");
     }
 
     function describeToolCall(item, index) {
@@ -391,6 +406,12 @@ pub(crate) const JS: &str = r#"
               "Number of tool result items sent back to the model. High values often mean shell output, file content, or repeated tool loops are growing context.",
               countSeverity(request.toolOutputCount || 0, THRESHOLDS.toolOutputsWarning, THRESHOLDS.toolOutputsCritical)
             ),
+            metric(
+              "Tool output chars",
+              formatChars(request.toolOutputChars || 0),
+              "Total stored characters across tool output input items in this request.",
+              charsSeverity(request.toolOutputChars || 0)
+            ),
             metric("Instructions", formatChars(request.instructionsChars || 0), "Characters in the top-level instructions field."),
             metric(
               "Request size",
@@ -472,11 +493,140 @@ pub(crate) const JS: &str = r#"
           ]),
           previewBlock("Response text", derived.responseText || "(empty)"),
           outputItemsBlock(response.items)
+        ),
+        panel(
+          "Growth Analysis",
+          analysisBlock(growthAnalysis(detail, derived)),
+          toolOutputRankBlock(request.toolOutputs || [])
         )
       );
       content.appendChild(grid);
       content.appendChild(eventTypesDisclosure(response.eventCounts));
       bodyEl.appendChild(content);
+    }
+
+    function growthAnalysis(detail, derived) {
+      const request = derived.requestInfo;
+      const items = [];
+      const topOutput = request.toolOutputs?.[0];
+      if (topOutput && topOutput.chars > 0) {
+        items.push({
+          title: "Largest tool output",
+          value: formatChars(topOutput.chars),
+          text: `${toolOutputTitle(topOutput)} is the biggest stored tool output in this request.`,
+        });
+      }
+      if ((request.toolOutputChars || 0) > 0) {
+        items.push({
+          title: "Tool output total",
+          value: formatChars(request.toolOutputChars),
+          text: `${request.toolOutputCount || 0} tool output items are being sent back into model context.`,
+        });
+      }
+      if ((request.instructionsChars || 0) >= 20000) {
+        items.push({
+          title: "Large instructions",
+          value: formatChars(request.instructionsChars),
+          text: "The top-level instructions field is large before any request messages or tool outputs are counted.",
+        });
+      }
+      if (detail.request_bytes >= THRESHOLDS.bytesWarning) {
+        items.push({
+          title: "Large request body",
+          value: formatBytes(detail.request_bytes),
+          text: "The full request body is large. Check Request Messages and Tool I/O to find the largest injected items.",
+        });
+      }
+      if (derived.events.length >= THRESHOLDS.eventsWarning) {
+        items.push({
+          title: "Many SSE events",
+          value: formatCount(derived.events.length),
+          text: "The response stream contains many events, usually from long output text or incremental tool updates.",
+        });
+      }
+      if (detail.input_tokens != null && detail.input_tokens >= THRESHOLDS.inputTokensWarning) {
+        items.push({
+          title: "High input tokens",
+          value: formatCount(detail.input_tokens),
+          text: "Token usage confirms a large model context. The cause is usually instructions, conversation history, or tool outputs.",
+        });
+      }
+      if (items.length === 0) {
+        items.push({
+          title: "No clear growth signal",
+          value: "-",
+          text: "Request size, tool output size, SSE event count, and token usage are below local growth thresholds.",
+        });
+      }
+      return items.slice(0, 6);
+    }
+
+    function analysisBlock(items) {
+      const list = document.createElement("div");
+      list.className = "analysis-list";
+      for (const item of items) {
+        const row = document.createElement("div");
+        row.className = "analysis-item";
+        const title = document.createElement("div");
+        title.className = "analysis-title";
+        const label = document.createElement("span");
+        label.textContent = item.title;
+        const value = document.createElement("span");
+        value.className = "count";
+        value.textContent = item.value;
+        title.append(label, value);
+        const text = document.createElement("div");
+        text.className = "analysis-text";
+        text.textContent = item.text;
+        row.append(title, text);
+        list.appendChild(row);
+      }
+      return list;
+    }
+
+    function toolOutputRankBlock(outputs, limit = 6, includeDetails = false) {
+      const fragment = document.createDocumentFragment();
+      const label = document.createElement("div");
+      label.className = "chips-title";
+      label.textContent = "Largest tool outputs";
+      fragment.appendChild(label);
+
+      const list = document.createElement("div");
+      list.className = "tool-list";
+      for (const output of outputs.slice(0, limit)) {
+        const row = document.createElement("div");
+        row.className = "tool-row";
+        const title = document.createElement("div");
+        title.className = "tool-title";
+        const name = document.createElement("span");
+        name.textContent = toolOutputTitle(output);
+        const size = document.createElement("span");
+        size.className = "count";
+        size.textContent = formatChars(output.chars);
+        title.append(name, size);
+        const summary = document.createElement("div");
+        summary.className = "tool-summary";
+        summary.textContent = preview(output.text || "(empty)", includeDetails ? 600 : 220);
+        row.append(title, summary);
+        if (includeDetails && output.text) {
+          const details = document.createElement("details");
+          const detailTitle = document.createElement("summary");
+          detailTitle.textContent = "Full output";
+          details.appendChild(detailTitle);
+          lazyDetails(details, () => textBlock(output.text));
+          row.appendChild(details);
+        }
+        list.appendChild(row);
+      }
+      if (outputs.length === 0) {
+        list.appendChild(emptyText("No tool outputs"));
+      }
+      fragment.appendChild(list);
+      return fragment;
+    }
+
+    function toolOutputTitle(output) {
+      return `#${output.index} ${output.name || output.kind}`;
     }
 
     function keyInfoBlock(detail, derived) {
@@ -634,6 +784,73 @@ pub(crate) const JS: &str = r#"
         bodyEl.appendChild(card);
       }
       if (messages.length === 0) bodyEl.append(textBlock("(empty)"));
+    }
+
+    function renderToolIo(request, response) {
+      if (!request.parsed) {
+        bodyEl.append(textBlock("Request body is not JSON."));
+        return;
+      }
+
+      const responseActions = response.items.filter((item) => item.type.includes("function_call"));
+      bodyEl.append(notice(`${request.toolCalls.length} request tool calls, ${request.toolOutputs.length} tool outputs, ${responseActions.length} response tool actions.`));
+      bodyEl.append(
+        panel("Largest Tool Outputs", toolOutputRankBlock(request.toolOutputs, 12, true)),
+        panel("Request Tool Calls", toolCallList(request.toolCalls)),
+        panel("Response Tool Actions", responseToolActionList(responseActions))
+      );
+    }
+
+    function toolCallList(calls) {
+      const list = document.createElement("div");
+      list.className = "tool-list";
+      for (const call of calls) {
+        const row = document.createElement("div");
+        row.className = "tool-row";
+        const title = document.createElement("div");
+        title.className = "tool-title";
+        const name = document.createElement("span");
+        name.textContent = `#${call.index} ${call.name}`;
+        const callId = document.createElement("span");
+        callId.className = "count";
+        callId.textContent = call.callId || "no call_id";
+        title.append(name, callId);
+        const summary = document.createElement("div");
+        summary.className = "tool-summary";
+        summary.textContent = call.summary || "(empty)";
+        row.append(title, summary);
+        list.appendChild(row);
+      }
+      if (calls.length === 0) {
+        list.appendChild(emptyText("No request tool calls"));
+      }
+      return list;
+    }
+
+    function responseToolActionList(actions) {
+      const list = document.createElement("div");
+      list.className = "tool-list";
+      for (const action of actions) {
+        const row = document.createElement("div");
+        row.className = "tool-row";
+        const title = document.createElement("div");
+        title.className = "tool-title";
+        const name = document.createElement("span");
+        name.textContent = action.name || action.type;
+        const status = document.createElement("span");
+        status.className = "count";
+        status.textContent = action.status || action.type;
+        title.append(name, status);
+        const summary = document.createElement("div");
+        summary.className = "tool-summary";
+        summary.textContent = summarizeToolCall(action.name || action.type, parseMaybeJson(action.text), action.text);
+        row.append(title, summary);
+        list.appendChild(row);
+      }
+      if (actions.length === 0) {
+        list.appendChild(emptyText("No response tool actions"));
+      }
+      return list;
     }
 
     function renderJsonOrText(parsed, raw, label) {

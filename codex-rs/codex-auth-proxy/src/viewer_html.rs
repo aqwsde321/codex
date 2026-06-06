@@ -223,7 +223,7 @@ const STYLE: &str = r#"
       line-height: 1.5;
     }
 
-    .body-surface.summary-mode { overflow: hidden; }
+    .body-surface.summary-mode { overflow: auto; }
 
     .attention {
       margin-bottom: 12px;
@@ -278,15 +278,14 @@ const STYLE: &str = r#"
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
       gap: 12px;
-      flex: 1 1 auto;
+      flex: 0 0 auto;
       min-height: 0;
-      grid-auto-rows: minmax(0, 1fr);
+      grid-auto-rows: auto;
       font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     }
 
     .summary-content {
-      height: 100%;
-      min-height: 0;
+      min-height: 100%;
       display: flex;
       flex-direction: column;
       gap: 12px;
@@ -380,6 +379,45 @@ const STYLE: &str = r#"
       font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
     }
 
+    .analysis-list, .tool-list {
+      min-height: 0;
+      overflow-x: hidden;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .analysis-item, .tool-row {
+      min-width: 0;
+      padding: 8px;
+      border-radius: 6px;
+      background: #f8fafc;
+    }
+
+    .analysis-title, .tool-title {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 4px;
+      font-weight: 650;
+    }
+
+    .analysis-text, .tool-summary {
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+      color: var(--text);
+      font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+    }
+
+    .tool-row details {
+      margin: 6px 0 0;
+      border-left: 0;
+      padding-left: 0;
+    }
+
     .empty-text {
       color: var(--muted);
       font-size: 12px;
@@ -397,7 +435,23 @@ const STYLE: &str = r#"
       min-height: 0;
       display: flex;
       flex-direction: column;
-      overflow: hidden;
+      overflow: visible;
+    }
+
+    .summary-grid .analysis-list,
+    .summary-grid .tool-list {
+      flex: 1 1 auto;
+      max-height: 260px;
+    }
+
+    .summary-grid .preview {
+      max-height: 260px;
+    }
+
+    .body-surface > .panel {
+      margin-bottom: 10px;
+      color: var(--text);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     }
 
     .event-types-disclosure {
@@ -674,6 +728,7 @@ const BODY: &str = r#"
       <div class="tabs">
         <button class="tab active" type="button" data-view="summary">Summary</button>
         <button class="tab" type="button" data-view="messages">Request Messages</button>
+        <button class="tab" type="button" data-view="tools">Tool I/O</button>
         <button class="tab" type="button" data-view="request">Request Tree</button>
         <button class="tab" type="button" data-view="text">Response Text</button>
         <button class="tab" type="button" data-view="events">Response Events</button>
