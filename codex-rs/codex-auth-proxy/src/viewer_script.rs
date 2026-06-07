@@ -141,7 +141,7 @@ pub(crate) const JS: &str = r#"
       }
       const titleText = document.createElement("span");
       titleText.className = "row-title-text";
-      titleText.textContent = request.model || request.path;
+      appendHighlightedText(titleText, request.model || request.path, searchTerm());
       title.appendChild(titleText);
 
       const status = document.createElement("div");
@@ -150,7 +150,8 @@ pub(crate) const JS: &str = r#"
 
       const sub = document.createElement("div");
       sub.className = "row-sub";
-      sub.textContent = `${request.method} ${request.path}${request.query ? "?" + request.query : ""}`;
+      const subText = `${request.method} ${request.path}${request.query ? "?" + request.query : ""}`;
+      appendHighlightedText(sub, subText, searchTerm());
 
       const badges = rowBadges(request);
       const meta = document.createElement("div");
@@ -189,6 +190,7 @@ pub(crate) const JS: &str = r#"
       if ((request.latency_ms || 0) >= THRESHOLDS.latencyWarningMs) items.push(["slow", "warning", "Slow response"]);
       if (rowHasHighTokens(request)) items.push(["tokens", "warning", "High token usage"]);
       if (request.request_body_truncated || request.response_body_truncated) items.push(["trunc", "warning", "Stored body truncated"]);
+      if (rowHasHiddenSearchMatch(request)) items.push(["match", "info", "Search matched hidden metadata or stored body"]);
 
       for (const [label, severity, tip] of items) {
         const badge = document.createElement("span");
@@ -205,6 +207,17 @@ pub(crate) const JS: &str = r#"
         || (request.output_tokens || 0) >= THRESHOLDS.outputTokensWarning
         || (request.total_tokens || 0) >= THRESHOLDS.totalTokensWarning
         || (request.reasoning_output_tokens || 0) >= THRESHOLDS.reasoningTokensWarning;
+    }
+
+    function rowHasHiddenSearchMatch(request) {
+      const term = searchTerm();
+      if (!term) return false;
+      return ![
+        request.model,
+        request.method,
+        request.path,
+        request.query,
+      ].some((value) => includesSearch(value, term));
     }
 
     function renderDetail() {
@@ -463,6 +476,8 @@ pub(crate) const JS: &str = r#"
       const content = document.createElement("div");
       content.className = "summary-content";
       content.appendChild(keyInfoBlock(detail, derived));
+      const searchMatch = searchMatchInfo(detail);
+      if (searchMatch) content.appendChild(searchMatchBlock(searchMatch));
       const growthItems = growthAnalysis(detail, derived);
       content.appendChild(mainCauseBlock(growthItems[0]));
 
@@ -674,6 +689,83 @@ pub(crate) const JS: &str = r#"
 
       block.append(label, title, text);
       return block;
+    }
+
+    function searchMatchInfo(detail) {
+      const term = searchTerm();
+      if (!term) return null;
+      const candidates = [
+        ["Response body", detail.response_body],
+        ["Request body", detail.request_body],
+        ["Error", detail.error],
+        ["Model", detail.model],
+        ["Method", detail.method],
+        ["Path", detail.query ? `${detail.path}?${detail.query}` : detail.path],
+        ["Client", detail.client_ip],
+        ["Request id", detail.id],
+      ];
+      for (const [label, value] of candidates) {
+        const snippet = searchSnippet(value, term);
+        if (snippet) return { label, snippet };
+      }
+      return { label: "Search", snippet: "Matched this row, but the exact stored field is not available in detail view." };
+    }
+
+    function searchMatchBlock(match) {
+      const block = document.createElement("div");
+      block.className = "search-match";
+      const label = document.createElement("span");
+      label.className = "search-match-label";
+      label.textContent = "Search match";
+      const source = document.createElement("strong");
+      source.textContent = match.label;
+      const snippet = document.createElement("span");
+      snippet.className = "search-match-snippet";
+      appendHighlightedText(snippet, match.snippet, searchTerm());
+      block.append(label, source, snippet);
+      return block;
+    }
+
+    function searchSnippet(value, term) {
+      if (!value) return null;
+      const text = String(value);
+      const index = text.toLowerCase().indexOf(term.toLowerCase());
+      if (index < 0) return null;
+      const start = Math.max(0, index - 80);
+      const end = Math.min(text.length, index + term.length + 120);
+      return `${start > 0 ? "..." : ""}${text.slice(start, end)}${end < text.length ? "..." : ""}`;
+    }
+
+    function appendHighlightedText(parent, value, term) {
+      const text = String(value || "");
+      if (!term) {
+        parent.textContent = text;
+        return;
+      }
+      const lowerText = text.toLowerCase();
+      const lowerTerm = term.toLowerCase();
+      let position = 0;
+      while (position < text.length) {
+        const index = lowerText.indexOf(lowerTerm, position);
+        if (index < 0) {
+          parent.appendChild(document.createTextNode(text.slice(position)));
+          break;
+        }
+        if (index > position) parent.appendChild(document.createTextNode(text.slice(position, index)));
+        const mark = document.createElement("mark");
+        mark.className = "search-highlight";
+        mark.textContent = text.slice(index, index + term.length);
+        parent.appendChild(mark);
+        position = index + term.length;
+      }
+    }
+
+    function includesSearch(value, term) {
+      return String(value || "").toLowerCase().includes(term.toLowerCase());
+    }
+
+    function searchTerm() {
+      return state.search.trim();
     }
 
     function analysisBlock(items) {

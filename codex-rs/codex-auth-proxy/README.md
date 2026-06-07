@@ -131,7 +131,9 @@ metadata plus stored request/response body text. The Summary view keeps only
 the highest-signal request/response metrics, highlights the main growth cause
 in one line, shows the top growth signals, and collapses long tool-name lists.
 The Tool I/O tab groups tool calls and tool outputs with the largest outputs
-ranked first.
+ranked first. When search is active, visible row matches are highlighted,
+hidden/body matches get a `match` badge, and the selected Summary shows the
+first matching field with a short snippet.
 The left request list stays as a single chronological list. When a row belongs
 to the selected request's flow, the row shows its `step/total` position inline
 and the related rows are lightly outlined. Rows also show compact cause badges

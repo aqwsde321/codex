@@ -182,7 +182,10 @@ request/response body 텍스트를 검색합니다. 빠른 필터로 에러, 느
 토큰 사용량이 큰 요청, body 저장이 잘린 요청만 볼 수 있습니다. Summary는
 중요도가 높은 request/response 지표만 남기고, 요청이 커진 가장 큰 원인을 한
 줄로 먼저 강조한 뒤 주요 원인과 tool 이름 목록은 압축해서 보여줍니다. Tool I/O
-탭은 tool call과 tool output만 모아서 큰 output 순서로 보여줍니다.
+탭은 tool call과 tool output만 모아서 큰 output 순서로 보여줍니다. 검색 중에는
+목록에 보이는 매칭 텍스트를 강조하고, 숨은 메타데이터나 저장 본문에서 매칭된
+row에는 `match` 배지를 붙이며, 선택한 Summary에는 첫 매칭 위치와 snippet을
+표시합니다.
 왼쪽 요청 목록은 하나의 시간순 목록으로 유지됩니다. 선택한 row의 flow에
 포함된 row에는 목록 안에서 `step/total` 번호와 옅은 묶음 테두리가 표시됩니다.
 또한 에러, 느린 응답, 높은 토큰 사용량, 잘린 저장 본문은 작은 cause badge로

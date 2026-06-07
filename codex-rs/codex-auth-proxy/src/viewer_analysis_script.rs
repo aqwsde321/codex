@@ -41,6 +41,7 @@ pub(crate) const JS: &str = r#"
       "Slow response": "응답 시간이 로컬 기준보다 오래 걸린 요청입니다.",
       "High token usage": "토큰 사용량이 로컬 기준보다 큰 요청입니다.",
       "Stored body truncated": "SQLite에 저장된 요청 또는 응답 본문이 잘린 요청입니다.",
+      "Search matched hidden metadata or stored body": "화면에 바로 보이지 않는 메타데이터 또는 저장된 본문에서 검색어가 매칭됐습니다.",
       "Input token usage is high but cached input ratio is low.": "입력 토큰 사용량은 큰데 캐시된 입력 비율이 낮습니다.",
       "No token usage was found in the upstream response. Token columns remain empty for this row.": "업스트림 응답에서 token usage를 찾지 못했습니다. 이 row의 토큰 컬럼은 비어 있습니다.",
       "Status, proxy errors, latency, body size, stream events, tool outputs, and token usage are within local thresholds.": "상태, 프록시 오류, 지연 시간, 본문 크기, 스트림 이벤트, tool output, 토큰 사용량이 로컬 기준 안에 있습니다.",
