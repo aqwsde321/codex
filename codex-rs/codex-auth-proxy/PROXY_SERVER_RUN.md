@@ -182,8 +182,10 @@ request/response body 텍스트를 검색합니다. 빠른 필터로 에러, 느
 토큰 사용량이 큰 요청, body 저장이 잘린 요청만 볼 수 있습니다.
 Summary의 Growth Analysis는 요청이 커진 주요 원인을 표시하고, Tool I/O
 탭은 tool call과 tool output만 모아서 큰 output 순서로 보여줍니다.
-Flow 탭은 저장된 request body에서 같은 User asked 텍스트를 찾을 수 있으면
-그 기준으로 주변 `/v1/responses` row를 묶어서 step 순서로 보여줍니다.
+Flow 탭은 response의 tool call `call_id`와 다음 request의 tool output
+`call_id`가 이어지면 그 체인을 우선으로 묶습니다. 체인을 찾지 못하면 같은
+User asked 텍스트 기준으로 주변 `/v1/responses` row를 묶어서 step 순서로
+보여줍니다.
 
 viewer는 민감한 요청/응답 내용을 보여주므로 loopback 주소에서만
 실행됩니다. `0.0.0.0` 같은 외부 접속 주소로는 실행할 수 없습니다.

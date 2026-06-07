@@ -529,17 +529,31 @@ pub(crate) const JS: &str = r#"
         bodyEl.append(notice("Loading request flow."));
         return;
       }
-      if (state.flow.length === 0) {
+      const rows = state.flow.rows || [];
+      if (rows.length === 0) {
         bodyEl.append(textBlock("No response requests for this flow."));
         return;
       }
 
-      const selectedIndex = state.flow.findIndex((row) => row.id === detail.id);
-      bodyEl.append(notice(`Flow groups rows with the same User asked text when available, then falls back to nearby /v1/responses rows. ${state.flow.length} steps, selected row is step ${selectedIndex >= 0 ? selectedIndex + 1 : "-"}.`));
+      const selectedIndex = rows.findIndex((row) => row.id === detail.id);
+      bodyEl.append(notice(`${flowBasisText(state.flow.basis)} ${rows.length} steps, selected row is step ${selectedIndex >= 0 ? selectedIndex + 1 : "-"}.`));
       const list = document.createElement("div");
       list.className = "flow-list";
-      state.flow.forEach((row, index) => list.appendChild(flowStep(row, index)));
+      rows.forEach((row, index) => list.appendChild(flowStep(row, index)));
       bodyEl.appendChild(list);
+    }
+
+    function flowBasisText(basis) {
+      if (basis === "tool_call_chain") {
+        return "Grouped by tool call chain, using response call_id to request tool output call_id links.";
+      }
+      if (basis === "user_asked") {
+        return "Grouped by the same User asked text within nearby /v1/responses rows.";
+      }
+      if (basis === "nearby") {
+        return "Grouped by nearby /v1/responses rows because no stronger flow key was found.";
+      }
+      return "No flow grouping key was available.";
     }
 
     async function loadFlow(id) {

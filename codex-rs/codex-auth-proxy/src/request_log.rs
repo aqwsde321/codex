@@ -1,4 +1,6 @@
 use std::cmp::Ordering;
+use std::collections::BTreeSet;
+use std::collections::VecDeque;
 use std::num::NonZeroU64;
 use std::path::Path;
 use std::time::Duration;
@@ -133,6 +135,21 @@ pub(crate) struct RequestLogSummary {
     pub(crate) error: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct RequestLogFlow {
+    pub(crate) basis: RequestLogFlowBasis,
+    pub(crate) rows: Vec<RequestLogSummary>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum RequestLogFlowBasis {
+    Unavailable,
+    ToolCallChain,
+    UserAsked,
+    Nearby,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, sqlx::FromRow)]
 pub(crate) struct RequestLogDetail {
     pub(crate) id: String,
@@ -191,6 +208,7 @@ struct RequestLogFlowCandidate {
     reasoning_output_tokens: Option<i64>,
     error: Option<String>,
     request_body: Option<String>,
+    response_body: Option<String>,
     distance: f64,
 }
 
@@ -478,7 +496,7 @@ WHERE id = ?
         Ok(Some(detail))
     }
 
-    pub(crate) async fn flow_around(&self, id: &str) -> Result<Vec<RequestLogSummary>> {
+    pub(crate) async fn flow_around(&self, id: &str) -> Result<RequestLogFlow> {
         let Some(selected) = sqlx::query_as::<_, RequestLogFlowSeed>(
             r#"
 SELECT
@@ -495,11 +513,17 @@ WHERE id = ?
         .await
         .context("reading selected proxy request flow row")?
         else {
-            return Ok(Vec::new());
+            return Ok(RequestLogFlow {
+                basis: RequestLogFlowBasis::Unavailable,
+                rows: Vec::new(),
+            });
         };
 
         if selected.path != "/v1/responses" {
-            return Ok(Vec::new());
+            return Ok(RequestLogFlow {
+                basis: RequestLogFlowBasis::Unavailable,
+                rows: Vec::new(),
+            });
         }
 
         let selected_user_asked =
@@ -529,6 +553,7 @@ SELECT
   r.reasoning_output_tokens,
   r.error,
   r.request_body,
+  r.response_body,
   ABS(CAST(r.started_at AS REAL) - CAST(? AS REAL)) AS distance
 FROM proxy_requests AS r
 WHERE r.path = '/v1/responses'
@@ -555,11 +580,18 @@ LIMIT ?
         .await
         .context("reading proxy request flow rows")?;
 
-        if let Some(selected_user_asked) = selected_user_asked.as_deref() {
+        let mut basis = RequestLogFlowBasis::Nearby;
+        if let Some(user_asked) = selected_user_asked.as_deref() {
             candidates.retain(|candidate| {
                 user_asked_key_from_request_body(candidate.request_body.as_deref()).as_deref()
-                    == Some(selected_user_asked)
+                    == Some(user_asked)
             });
+            basis = RequestLogFlowBasis::UserAsked;
+        }
+
+        if let Some(chain) = call_id_flow_candidates(&candidates, id) {
+            candidates = chain;
+            basis = RequestLogFlowBasis::ToolCallChain;
         }
 
         candidates.sort_by(|left, right| {
@@ -583,7 +615,7 @@ LIMIT ?
                 .then_with(|| left.id.cmp(&right.id))
         });
 
-        Ok(candidates
+        let rows = candidates
             .into_iter()
             .map(|candidate| RequestLogSummary {
                 id: candidate.id,
@@ -607,7 +639,9 @@ LIMIT ?
                 reasoning_output_tokens: candidate.reasoning_output_tokens,
                 error: candidate.error,
             })
-            .collect())
+            .collect();
+
+        Ok(RequestLogFlow { basis, rows })
     }
 
     #[cfg(test)]
@@ -862,6 +896,152 @@ fn normalize_user_asked_text(text: &str) -> Option<String> {
         None
     } else {
         Some(normalized)
+    }
+}
+
+struct FlowCallIds {
+    request_tool_outputs: BTreeSet<String>,
+    response_tool_calls: BTreeSet<String>,
+}
+
+fn call_id_flow_candidates(
+    candidates: &[RequestLogFlowCandidate],
+    selected_id: &str,
+) -> Option<Vec<RequestLogFlowCandidate>> {
+    let selected_index = candidates
+        .iter()
+        .position(|candidate| candidate.id == selected_id)?;
+    let call_ids = candidates
+        .iter()
+        .map(|candidate| FlowCallIds {
+            request_tool_outputs: request_tool_output_call_ids(candidate.request_body.as_deref()),
+            response_tool_calls: response_tool_call_ids(candidate.response_body.as_deref()),
+        })
+        .collect::<Vec<_>>();
+    let mut adjacency = vec![Vec::new(); candidates.len()];
+    for earlier in 0..candidates.len() {
+        for later in 0..candidates.len() {
+            if earlier == later
+                || candidates[earlier].started_at_seconds > candidates[later].started_at_seconds
+            {
+                continue;
+            }
+            if call_ids[earlier]
+                .response_tool_calls
+                .is_disjoint(&call_ids[later].request_tool_outputs)
+            {
+                continue;
+            }
+            adjacency[earlier].push(later);
+            adjacency[later].push(earlier);
+        }
+    }
+
+    let mut seen = BTreeSet::new();
+    let mut queue = VecDeque::from([selected_index]);
+    while let Some(index) = queue.pop_front() {
+        if !seen.insert(index) {
+            continue;
+        }
+        queue.extend(adjacency[index].iter().copied());
+    }
+    if seen.len() <= 1 {
+        return None;
+    }
+
+    Some(
+        seen.into_iter()
+            .map(|index| candidates[index].clone())
+            .collect(),
+    )
+}
+
+fn request_tool_output_call_ids(body: Option<&str>) -> BTreeSet<String> {
+    let mut call_ids = BTreeSet::new();
+    let Some(Value::Array(items)) = body
+        .and_then(|body| serde_json::from_str::<Value>(body).ok())
+        .and_then(|request| request.get("input").cloned())
+    else {
+        return call_ids;
+    };
+
+    for item in items {
+        let Value::Object(map) = item else {
+            continue;
+        };
+        let kind = map.get("type").and_then(Value::as_str).unwrap_or_default();
+        if !(kind.contains("output") || kind.contains("call_result")) {
+            continue;
+        }
+        if let Some(call_id) = map.get("call_id").and_then(Value::as_str)
+            && !call_id.is_empty()
+        {
+            call_ids.insert(call_id.to_string());
+        }
+    }
+    call_ids
+}
+
+fn response_tool_call_ids(body: Option<&str>) -> BTreeSet<String> {
+    let mut call_ids = BTreeSet::new();
+    let Some(body) = body else {
+        return call_ids;
+    };
+
+    let mut data_lines = Vec::new();
+    for line in body.lines().map(|line| line.trim_end_matches('\r')) {
+        if line.is_empty() {
+            collect_response_tool_call_ids_from_sse_data(&data_lines, &mut call_ids);
+            data_lines.clear();
+            continue;
+        }
+        if let Some(data) = line.strip_prefix("data:") {
+            data_lines.push(data.trim_start());
+        }
+    }
+    collect_response_tool_call_ids_from_sse_data(&data_lines, &mut call_ids);
+
+    call_ids
+}
+
+fn collect_response_tool_call_ids_from_sse_data(
+    data_lines: &[&str],
+    call_ids: &mut BTreeSet<String>,
+) {
+    if data_lines.is_empty() {
+        return;
+    }
+    let data = data_lines.join("\n");
+    let data = data.trim();
+    if data.is_empty() || data == "[DONE]" {
+        return;
+    }
+    if let Ok(value) = serde_json::from_str::<Value>(data) {
+        collect_response_tool_call_ids(&value, call_ids);
+    }
+}
+
+fn collect_response_tool_call_ids(value: &Value, call_ids: &mut BTreeSet<String>) {
+    match value {
+        Value::Array(items) => {
+            for item in items {
+                collect_response_tool_call_ids(item, call_ids);
+            }
+        }
+        Value::Object(map) => {
+            let kind = map.get("type").and_then(Value::as_str).unwrap_or_default();
+            if (kind.contains("function_call") || kind.contains("tool_call"))
+                && !kind.contains("output")
+                && let Some(call_id) = map.get("call_id").and_then(Value::as_str)
+                && !call_id.is_empty()
+            {
+                call_ids.insert(call_id.to_string());
+            }
+            for item in map.values() {
+                collect_response_tool_call_ids(item, call_ids);
+            }
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
     }
 }
 

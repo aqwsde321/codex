@@ -628,9 +628,10 @@ fn request_logger_reads_flow_around_selected_row() {
             )
             .await;
 
-            let rows = logger.flow_around("req-selected").await.expect("flow rows");
+            let flow = logger.flow_around("req-selected").await.expect("flow rows");
+            assert_eq!(flow.basis, RequestLogFlowBasis::UserAsked);
             assert_eq!(
-                rows.into_iter().map(|row| row.id).collect::<Vec<_>>(),
+                flow.rows.into_iter().map(|row| row.id).collect::<Vec<_>>(),
                 vec![
                     "req-before".to_string(),
                     "req-selected".to_string(),
@@ -639,7 +640,78 @@ fn request_logger_reads_flow_around_selected_row() {
             );
             assert_eq!(
                 logger.flow_around("missing").await.expect("missing flow"),
-                Vec::<RequestLogSummary>::new()
+                RequestLogFlow {
+                    basis: RequestLogFlowBasis::Unavailable,
+                    rows: Vec::new()
+                }
+            );
+        });
+    });
+}
+
+#[test]
+fn request_logger_prefers_call_id_flow() {
+    with_logger(|runtime, logger| {
+        runtime.block_on(async {
+            let request_body = request_body_with_user("same user request");
+            insert_completed_with_body_meta(
+                logger,
+                "req-call",
+                "1000.000",
+                Some("192.168.0.10"),
+                "/v1/responses",
+                request_body.as_bytes(),
+                br#"event: response.output_item.done
+data: {"item":{"type":"function_call","call_id":"call-1","name":"exec_command"}}
+
+"#,
+            )
+            .await;
+            let followup_body = serde_json::json!({
+                "model": "gpt-5.5",
+                "input": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "input_text",
+                                "text": "same user request"
+                            }
+                        ]
+                    },
+                    {
+                        "type": "function_call_output",
+                        "call_id": "call-1",
+                        "output": "tool output"
+                    }
+                ]
+            })
+            .to_string();
+            insert_completed_with_body_meta(
+                logger,
+                "req-followup",
+                "1001.000",
+                Some("192.168.0.10"),
+                "/v1/responses",
+                followup_body.as_bytes(),
+                b"event: done\n\n",
+            )
+            .await;
+            insert_completed_with_meta(
+                logger,
+                "req-same-user-unlinked",
+                "1002.000",
+                Some("192.168.0.10"),
+                "/v1/responses",
+                Some("same user request"),
+            )
+            .await;
+
+            let flow = logger.flow_around("req-call").await.expect("flow rows");
+            assert_eq!(flow.basis, RequestLogFlowBasis::ToolCallChain);
+            assert_eq!(
+                flow.rows.into_iter().map(|row| row.id).collect::<Vec<_>>(),
+                vec!["req-call".to_string(), "req-followup".to_string()]
             );
         });
     });
@@ -823,6 +895,27 @@ async fn insert_completed_with_meta(
     let request_body = user_asked
         .map(request_body_with_user)
         .unwrap_or_else(|| "{}".to_string());
+    insert_completed_with_body_meta(
+        logger,
+        id,
+        started_at,
+        client_ip,
+        path,
+        request_body.as_bytes(),
+        b"event: done\n\n",
+    )
+    .await;
+}
+
+async fn insert_completed_with_body_meta(
+    logger: &RequestLogger,
+    id: &str,
+    started_at: &str,
+    client_ip: Option<&str>,
+    path: &str,
+    request_body: &[u8],
+    response_body: &[u8],
+) {
     logger
         .insert_start(RequestLogStart {
             id,
@@ -832,7 +925,7 @@ async fn insert_completed_with_meta(
             path,
             query: None,
             model: Some("gpt-5.5"),
-            request_body: request_body.as_bytes(),
+            request_body,
         })
         .await
         .expect("insert row");
@@ -843,7 +936,7 @@ async fn insert_completed_with_meta(
                 completed_at: "9999.001",
                 upstream_status: Some(200),
                 latency_ms: 1,
-                response_body: b"event: done\n\n",
+                response_body,
                 error: None,
             },
         )

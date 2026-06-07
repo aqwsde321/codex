@@ -104,8 +104,8 @@ fn handle_viewer_request(runtime: &Runtime, logger: &RequestLogger, req: Request
                 return Ok(());
             };
             if let Some(id) = id.strip_suffix("/flow") {
-                let rows = runtime.block_on(logger.flow_around(id))?;
-                respond_json(req, &rows)?;
+                let flow = runtime.block_on(logger.flow_around(id))?;
+                respond_json(req, &flow)?;
                 return Ok(());
             }
             match runtime.block_on(logger.get_detail(id))? {
