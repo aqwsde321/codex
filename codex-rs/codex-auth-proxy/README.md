@@ -127,9 +127,10 @@ collapsible request JSON, extracted response text, response SSE events, and raw
 SSE. Large request strings and SSE event payloads are rendered only when their
 rows are expanded. The request list includes quick filters for errors, slow
 requests, high token usage, and truncated log rows. The search box scans row
-metadata plus stored request/response body text. The Summary view includes a
-Growth Analysis panel for the largest request growth signals, and the Tool I/O
-tab groups tool calls and tool outputs with the largest outputs ranked first.
+metadata plus stored request/response body text. The Summary view keeps only
+the highest-signal request/response metrics, shows the top growth signals, and
+collapses long tool-name lists. The Tool I/O tab groups tool calls and tool
+outputs with the largest outputs ranked first.
 The left request list stays as a single chronological list. When a row belongs
 to the selected request's flow, the row shows its `step/total` position inline
 and the related rows are lightly outlined. Flow grouping first uses tool call

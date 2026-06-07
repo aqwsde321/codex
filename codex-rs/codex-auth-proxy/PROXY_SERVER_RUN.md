@@ -179,9 +179,10 @@ viewer에서는 먼저 요약 화면이 보입니다. 요청은 message 목록�
 확인할 수 있습니다. 긴 요청 문자열과 SSE event payload는 해당 row를 펼쳤을
 때 렌더링됩니다. 왼쪽 목록 위의 검색창은 row 메타데이터와 저장된
 request/response body 텍스트를 검색합니다. 빠른 필터로 에러, 느린 요청,
-토큰 사용량이 큰 요청, body 저장이 잘린 요청만 볼 수 있습니다.
-Summary의 Growth Analysis는 요청이 커진 주요 원인을 표시하고, Tool I/O
-탭은 tool call과 tool output만 모아서 큰 output 순서로 보여줍니다.
+토큰 사용량이 큰 요청, body 저장이 잘린 요청만 볼 수 있습니다. Summary는
+중요도가 높은 request/response 지표만 남기고, 요청이 커진 주요 원인과 tool
+이름 목록은 압축해서 보여줍니다. Tool I/O 탭은 tool call과 tool output만 모아서
+큰 output 순서로 보여줍니다.
 왼쪽 요청 목록은 하나의 시간순 목록으로 유지됩니다. 선택한 row의 flow에
 포함된 row에는 목록 안에서 `step/total` 번호와 옅은 묶음 테두리가 표시됩니다.
 Flow는 response의 tool call `call_id`와 다음 request의 tool output `call_id`가

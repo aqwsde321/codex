@@ -545,13 +545,17 @@ const STYLE: &str = r#"
       font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     }
 
-    .event-types-disclosure summary {
+    .event-types-disclosure summary, .chips-disclosure summary {
       justify-content: flex-start;
       color: var(--text);
       font-weight: 700;
     }
 
-    .event-types-disclosure .chips {
+    .event-types-disclosure .chips, .chips-disclosure .chips {
+      margin-top: 8px;
+    }
+
+    .chips-disclosure {
       margin-top: 8px;
     }
 
@@ -809,10 +813,10 @@ const BODY: &str = r#"
       </div>
       <div class="tabs">
         <button class="tab active" type="button" data-view="summary">Summary</button>
-        <button class="tab" type="button" data-view="messages">Request Messages</button>
+        <button class="tab" type="button" data-view="messages">Messages</button>
         <button class="tab" type="button" data-view="tools">Tool I/O</button>
         <button class="tab secondary" type="button" data-view="request">Request Tree</button>
-        <button class="tab" type="button" data-view="text">Response Text</button>
+        <button class="tab" type="button" data-view="text">Answer</button>
         <button class="tab secondary" type="button" data-view="events">Response Events</button>
         <button class="tab secondary" type="button" data-view="raw">Raw SSE</button>
         <button class="tab" type="button" data-view="error">Error</button>
