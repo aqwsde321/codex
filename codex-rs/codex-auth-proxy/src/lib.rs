@@ -442,8 +442,24 @@ fn proxy_auth_label(env_var: Option<&str>, proxy_auth: &ProxyAuth) -> String {
 }
 
 fn log_db_label(path: Option<&Path>) -> String {
-    path.map(|path| path.display().to_string())
+    path.map(absolute_path_label)
         .unwrap_or_else(|| "disabled".to_string())
+}
+
+pub(crate) fn absolute_path_label(path: &Path) -> String {
+    absolute_path(path).display().to_string()
+}
+
+fn absolute_path(path: &Path) -> PathBuf {
+    if let Ok(path) = path.canonicalize() {
+        return path;
+    }
+    if path.is_absolute() {
+        return path.to_path_buf();
+    }
+    std::env::current_dir()
+        .map(|cwd| cwd.join(path))
+        .unwrap_or_else(|_| path.to_path_buf())
 }
 
 fn log_retention_label(log_db: Option<&Path>, arg: Option<LogRetainRowsArg>) -> String {

@@ -249,6 +249,19 @@ fn startup_log_labels_show_log_defaults_when_db_enabled() {
 }
 
 #[test]
+fn startup_log_labels_show_absolute_log_db_path() {
+    let db = Path::new("missing-startup-label-test.sqlite");
+    let label = log_db_label(Some(db));
+    let expected = std::env::current_dir()
+        .expect("current dir")
+        .join(db)
+        .display()
+        .to_string();
+
+    assert_eq!(label, expected);
+}
+
+#[test]
 fn startup_log_labels_show_disabled_when_db_is_disabled() {
     assert_eq!(
         log_retention_label(/*log_db*/ None, /*arg*/ None),

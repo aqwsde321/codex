@@ -56,7 +56,7 @@ codex-auth-proxy listening on 0.0.0.0:8787
   health: http://<프록시_IP>:8787/health
   client_base_url: http://<프록시_IP>:8787/v1
   proxy_auth: bearer token from $CODEX_PROXY_TOKEN
-  log_db: ./codex-auth-proxy.sqlite
+  log_db: <절대_DB_경로>/codex-auth-proxy.sqlite
   retention: 1000 completed rows
   body_limit: 1048576 bytes per request/response body
 ```

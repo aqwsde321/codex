@@ -17,6 +17,7 @@ use tiny_http::Server;
 use tiny_http::StatusCode;
 use tokio::runtime::Runtime;
 
+use crate::absolute_path_label;
 use crate::request_log::RequestLogFilter;
 use crate::request_log::RequestLogListQuery;
 use crate::request_log::RequestLogStats;
@@ -65,7 +66,7 @@ pub(crate) fn run_viewer(args: ViewerArgs) -> Result<()> {
         .to_ip()
         .ok_or_else(|| anyhow!("viewer did not expose a TCP listen address"))?;
     eprintln!("codex-auth-proxy viewer listening on http://{bound_addr}");
-    eprintln!("  db: {}", args.db.display());
+    eprintln!("  db: {}", absolute_path_label(&args.db));
     eprintln!("  viewer_url: http://{bound_addr}");
 
     for request in server.incoming_requests() {
@@ -147,7 +148,7 @@ fn viewer_stats(runtime: &Runtime, logger: &RequestLogger, db_path: &Path) -> Re
     let log = runtime.block_on(logger.stats())?;
     Ok(ViewerStats {
         log,
-        db_path: db_path.display().to_string(),
+        db_path: absolute_path_label(db_path),
         db_bytes: file_len(db_path),
         db_total_bytes: sqlite_total_bytes(db_path),
     })
