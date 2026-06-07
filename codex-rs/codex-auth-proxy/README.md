@@ -128,12 +128,15 @@ SSE. Large request strings and SSE event payloads are rendered only when their
 rows are expanded. The request list includes quick filters for errors, slow
 requests, high token usage, and truncated log rows. The search box scans row
 metadata plus stored request/response body text. The Summary view keeps only
-the highest-signal request/response metrics, shows the top growth signals, and
-collapses long tool-name lists. The Tool I/O tab groups tool calls and tool
-outputs with the largest outputs ranked first.
+the highest-signal request/response metrics, highlights the main growth cause
+in one line, shows the top growth signals, and collapses long tool-name lists.
+The Tool I/O tab groups tool calls and tool outputs with the largest outputs
+ranked first.
 The left request list stays as a single chronological list. When a row belongs
 to the selected request's flow, the row shows its `step/total` position inline
-and the related rows are lightly outlined. Flow grouping first uses tool call
+and the related rows are lightly outlined. Rows also show compact cause badges
+for errors, slow responses, high token usage, and truncated stored bodies. Flow
+grouping first uses tool call
 `call_id` links when a response tool call is followed by a matching request tool
 output. If no call chain is available, it falls back to nearby `/v1/responses`
 rows with the same User asked text. Raw request/response inspection tabs remain

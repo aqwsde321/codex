@@ -230,7 +230,43 @@ const STYLE: &str = r#"
       white-space: nowrap;
     }
     .row-sub, .row-meta, .empty { color: var(--muted); font-size: 12px; }
-    .row-meta { text-align: right; }
+    .row-meta {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      gap: 4px 6px;
+      text-align: right;
+    }
+
+    .row-badges {
+      display: inline-flex;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      gap: 3px;
+    }
+
+    .row-badge {
+      border-radius: 999px;
+      padding: 1px 5px;
+      border: 1px solid var(--line);
+      background: var(--chip);
+      color: var(--muted);
+      font-size: 10px;
+      font-weight: 700;
+      line-height: 1.25;
+    }
+
+    .row-badge.critical {
+      border-color: #ffb4ab;
+      background: var(--danger-bg);
+      color: var(--danger);
+    }
+
+    .row-badge.warning {
+      border-color: #eac54f;
+      background: var(--warn-bg);
+      color: var(--warn);
+    }
 
     .status-code {
       font-size: 12px;
@@ -370,6 +406,45 @@ const STYLE: &str = r#"
       display: flex;
       flex-direction: column;
       gap: 12px;
+    }
+
+    .main-cause {
+      display: grid;
+      grid-template-columns: auto auto minmax(0, 1fr);
+      gap: 8px;
+      align-items: baseline;
+      padding: 9px 11px;
+      border: 1px solid #eac54f;
+      border-radius: 6px;
+      background: var(--warn-bg);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    .main-cause.quiet {
+      border-color: var(--line);
+      background: #fff;
+    }
+
+    .main-cause-label {
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
+
+    .main-cause strong {
+      font-size: 13px;
+      white-space: nowrap;
+    }
+
+    .main-cause-text {
+      min-width: 0;
+      overflow: hidden;
+      color: var(--text);
+      font-size: 12px;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
 
     .key-info {
@@ -774,6 +849,8 @@ const STYLE: &str = r#"
       .body-surface.summary-mode { overflow: auto; }
       .summary-content { min-height: auto; }
       .summary-grid { display: grid; }
+      .main-cause { grid-template-columns: 1fr; }
+      .main-cause strong, .main-cause-text { white-space: normal; }
       .preview { min-height: 120px; max-height: 220px; }
     }
 "#;

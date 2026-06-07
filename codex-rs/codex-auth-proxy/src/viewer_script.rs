@@ -152,9 +152,12 @@ pub(crate) const JS: &str = r#"
       sub.className = "row-sub";
       sub.textContent = `${request.method} ${request.path}${request.query ? "?" + request.query : ""}`;
 
+      const badges = rowBadges(request);
       const meta = document.createElement("div");
       meta.className = "row-meta";
-      meta.textContent = rowMeta(request);
+      const metaText = document.createElement("span");
+      metaText.textContent = rowMeta(request);
+      meta.append(metaText, badges);
       row.append(title, status, sub, meta);
       return row;
     }
@@ -175,8 +178,33 @@ pub(crate) const JS: &str = r#"
     function rowMeta(request) {
       const parts = [`${request.latency_ms ?? "-"} ms`];
       if (request.total_tokens != null) parts.push(`${formatCount(request.total_tokens)} tok`);
-      if (request.request_body_truncated || request.response_body_truncated) parts.push("truncated");
       return parts.join(" · ");
+    }
+
+    function rowBadges(request) {
+      const badges = document.createElement("span");
+      badges.className = "row-badges";
+      const items = [];
+      if (isErrorStatus(request.upstream_status) || request.error) items.push(["err", "critical", "HTTP/proxy error"]);
+      if ((request.latency_ms || 0) >= THRESHOLDS.latencyWarningMs) items.push(["slow", "warning", "Slow response"]);
+      if (rowHasHighTokens(request)) items.push(["tokens", "warning", "High token usage"]);
+      if (request.request_body_truncated || request.response_body_truncated) items.push(["trunc", "warning", "Stored body truncated"]);
+
+      for (const [label, severity, tip] of items) {
+        const badge = document.createElement("span");
+        badge.className = `row-badge ${severity}`;
+        badge.textContent = label;
+        attachTooltip(badge, tip);
+        badges.appendChild(badge);
+      }
+      return badges;
+    }
+
+    function rowHasHighTokens(request) {
+      return (request.input_tokens || 0) >= THRESHOLDS.inputTokensWarning
+        || (request.output_tokens || 0) >= THRESHOLDS.outputTokensWarning
+        || (request.total_tokens || 0) >= THRESHOLDS.totalTokensWarning
+        || (request.reasoning_output_tokens || 0) >= THRESHOLDS.reasoningTokensWarning;
     }
 
     function renderDetail() {
@@ -435,6 +463,8 @@ pub(crate) const JS: &str = r#"
       const content = document.createElement("div");
       content.className = "summary-content";
       content.appendChild(keyInfoBlock(detail, derived));
+      const growthItems = growthAnalysis(detail, derived);
+      content.appendChild(mainCauseBlock(growthItems[0]));
 
       const grid = document.createElement("div");
       grid.className = "summary-grid";
@@ -534,7 +564,7 @@ pub(crate) const JS: &str = r#"
         ),
         panel(
           "Growth Analysis",
-          analysisBlock(growthAnalysis(detail, derived)),
+          analysisBlock(growthItems),
           toolOutputRankBlock(request.toolOutputs || [], 3)
         )
       );
@@ -599,7 +629,7 @@ pub(crate) const JS: &str = r#"
         items.push({
           title: "Large request body",
           value: formatBytes(detail.request_bytes),
-          text: "The full request body is large. Check Request Messages and Tool I/O to find the largest injected items.",
+          text: "The full request body is large. Check Messages and Tool I/O to find the largest injected items.",
         });
       }
       if (derived.events.length >= THRESHOLDS.eventsWarning) {
@@ -624,6 +654,26 @@ pub(crate) const JS: &str = r#"
         });
       }
       return items.slice(0, 3);
+    }
+
+    function mainCauseBlock(item) {
+      const block = document.createElement("div");
+      block.className = "main-cause";
+      if (!item || item.title === "No clear growth signal") block.classList.add("quiet");
+
+      const label = document.createElement("span");
+      label.className = "main-cause-label";
+      label.textContent = "Main cause";
+
+      const title = document.createElement("strong");
+      title.textContent = item ? `${item.title} · ${item.value}` : "No clear growth signal";
+
+      const text = document.createElement("span");
+      text.className = "main-cause-text";
+      text.textContent = item?.text || "No obvious request growth signal was detected.";
+
+      block.append(label, title, text);
+      return block;
     }
 
     function analysisBlock(items) {

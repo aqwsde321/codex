@@ -180,15 +180,16 @@ viewer에서는 먼저 요약 화면이 보입니다. 요청은 message 목록�
 때 렌더링됩니다. 왼쪽 목록 위의 검색창은 row 메타데이터와 저장된
 request/response body 텍스트를 검색합니다. 빠른 필터로 에러, 느린 요청,
 토큰 사용량이 큰 요청, body 저장이 잘린 요청만 볼 수 있습니다. Summary는
-중요도가 높은 request/response 지표만 남기고, 요청이 커진 주요 원인과 tool
-이름 목록은 압축해서 보여줍니다. Tool I/O 탭은 tool call과 tool output만 모아서
-큰 output 순서로 보여줍니다.
+중요도가 높은 request/response 지표만 남기고, 요청이 커진 가장 큰 원인을 한
+줄로 먼저 강조한 뒤 주요 원인과 tool 이름 목록은 압축해서 보여줍니다. Tool I/O
+탭은 tool call과 tool output만 모아서 큰 output 순서로 보여줍니다.
 왼쪽 요청 목록은 하나의 시간순 목록으로 유지됩니다. 선택한 row의 flow에
 포함된 row에는 목록 안에서 `step/total` 번호와 옅은 묶음 테두리가 표시됩니다.
-Flow는 response의 tool call `call_id`와 다음 request의 tool output `call_id`가
-이어지면 그 체인을 우선으로 묶습니다. 체인을 찾지 못하면 같은 User asked 텍스트
-기준으로 주변 `/v1/responses` row를 묶습니다. 원본 request/response 확인용 탭은
-남아 있지만 기본 분석 탭보다 작고 흐리게 표시됩니다.
+또한 에러, 느린 응답, 높은 토큰 사용량, 잘린 저장 본문은 작은 cause badge로
+표시됩니다. Flow는 response의 tool call `call_id`와 다음 request의 tool output
+`call_id`가 이어지면 그 체인을 우선으로 묶습니다. 체인을 찾지 못하면 같은 User
+asked 텍스트 기준으로 주변 `/v1/responses` row를 묶습니다. 원본 request/response
+확인용 탭은 남아 있지만 기본 분석 탭보다 작고 흐리게 표시됩니다.
 
 viewer는 민감한 요청/응답 내용을 보여주므로 loopback 주소에서만
 실행됩니다. `0.0.0.0` 같은 외부 접속 주소로는 실행할 수 없습니다.
