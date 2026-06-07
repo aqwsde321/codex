@@ -8,9 +8,15 @@
 
 ## 준비물
 
-- 프록시 서버 컴퓨터의 현재 IP
+- 프록시 서버 시작 로그의 `client_base_url`
 - 프록시 서버에서 설정한 `CODEX_PROXY_TOKEN`
 - 외부 컴퓨터에 Codex가 설치되어 있고 `~/.codex` 디렉터리가 있는 상태
+
+프록시 서버가 켜질 때 아래처럼 표시되는 값을 사용합니다.
+
+```text
+client_base_url: http://<프록시_IP>:8787/v1
+```
 
 `~/.codex`가 있는지 먼저 확인합니다.
 
@@ -65,30 +71,28 @@ EOF
 
 ### 3. 실행
 
-아래 명령에서 `test`와 `192.168.0.94`를 실제 토큰과 프록시 서버 IP로
-바꿔서 실행합니다.
-
-```shell
-CODEX_PROXY_TOKEN=test codex -p local-proxy \
-  -c 'model_providers.local-auth-proxy.base_url="http://192.168.0.94:8787/v1"'
-```
-
-토큰을 매번 명령 앞에 붙이기 싫으면 한 번 export 후 실행해도 됩니다.
+아래 명령에서 `test`는 실제 토큰으로, `CODEX_AUTH_PROXY_BASE_URL`은 프록시
+서버 시작 로그의 `client_base_url` 값으로 바꿔서 실행합니다.
 
 ```shell
 export CODEX_PROXY_TOKEN=test
+export CODEX_AUTH_PROXY_BASE_URL='http://<프록시_IP>:8787/v1'
 
 codex -p local-proxy \
-  -c 'model_providers.local-auth-proxy.base_url="http://192.168.0.94:8787/v1"'
+  -c "model_providers.local-auth-proxy.base_url=\"$CODEX_AUTH_PROXY_BASE_URL\""
 ```
 
 ## IP가 바뀌었을 때
 
 config 파일을 다시 수정하지 말고, 실행 명령의 IP만 새 IP로 바꿉니다.
+프록시 서버 시작 로그에 새로 찍힌 `client_base_url`을 그대로 사용하면 됩니다.
 
 ```shell
-CODEX_PROXY_TOKEN=test codex -p local-proxy \
-  -c 'model_providers.local-auth-proxy.base_url="http://새_IP:8787/v1"'
+export CODEX_PROXY_TOKEN=test
+export CODEX_AUTH_PROXY_BASE_URL='새_client_base_url'
+
+codex -p local-proxy \
+  -c "model_providers.local-auth-proxy.base_url=\"$CODEX_AUTH_PROXY_BASE_URL\""
 ```
 
 ## 헬스체크
@@ -98,7 +102,7 @@ Codex 실행 전에 프록시 서버 접근이 되는지 확인할 수 있습니
 ```shell
 curl -i \
   -H "Authorization: Bearer test" \
-  http://192.168.0.94:8787/health
+  http://<프록시_IP>:8787/health
 ```
 
 정상이라면 `200 OK`와 `{"status":"ok"}` 응답이 나옵니다.
@@ -109,7 +113,7 @@ curl -i \
 실제 IP를 넣고 실행 명령을 짧게 사용할 수 있습니다.
 
 ```toml
-base_url = "http://192.168.0.94:8787/v1"
+base_url = "http://<고정_프록시_IP>:8787/v1"
 ```
 
 그 경우 실행은 아래처럼 하면 됩니다.

@@ -3,7 +3,9 @@ use std::fs::File;
 use std::io::Read;
 use std::io::Write;
 use std::net::IpAddr;
+use std::net::Ipv4Addr;
 use std::net::SocketAddr;
+use std::net::UdpSocket;
 use std::num::NonZeroU64;
 use std::path::Path;
 use std::path::PathBuf;
@@ -250,7 +252,7 @@ pub fn run_main(args: Args) -> Result<()> {
     let log_retain_rows = args.log_retain_rows;
     let log_max_body_bytes = args.log_max_body_bytes;
 
-    let codex_home = match args.codex_home {
+    let codex_home = match args.codex_home.clone() {
         Some(path) => path,
         None => codex_utils_home_dir::find_codex_home()
             .context("resolving CODEX_HOME")?
@@ -311,7 +313,7 @@ pub fn run_main(args: Args) -> Result<()> {
             .context("building reqwest client")?,
     );
 
-    eprintln!("codex-auth-proxy listening on {bound_addr}");
+    print_startup_summary(&args, bound_addr, &config);
 
     let http_shutdown = args.http_shutdown;
     for request in server.incoming_requests() {
@@ -368,6 +370,102 @@ fn default_responses_url() -> String {
 
 fn default_models_url() -> String {
     format!("{}/models", CHATGPT_CODEX_BASE_URL.trim_end_matches('/'))
+}
+
+fn print_startup_summary(args: &Args, bound_addr: SocketAddr, config: &ForwardConfig) {
+    let client_addr = remote_client_addr(bound_addr);
+    eprintln!("codex-auth-proxy listening on {bound_addr}");
+    eprintln!("  local_ip: {}", local_ip_label(bound_addr));
+    eprintln!("  health: {}", proxy_url(client_addr, "/health"));
+    eprintln!("  client_base_url: {}", proxy_url(client_addr, "/v1"));
+    eprintln!(
+        "  proxy_auth: {}",
+        proxy_auth_label(args.proxy_token_env.as_deref(), &config.proxy_auth)
+    );
+    eprintln!("  log_db: {}", log_db_label(args.log_db.as_deref()));
+    eprintln!(
+        "  retention: {}",
+        log_retention_label(args.log_db.as_deref(), args.log_retain_rows)
+    );
+    eprintln!(
+        "  body_limit: {}",
+        log_body_limit_label(args.log_db.as_deref(), args.log_max_body_bytes)
+    );
+    eprintln!("  upstream_responses: {}", config.responses_url);
+    eprintln!("  upstream_models: {}", config.models_url);
+}
+
+fn remote_client_addr(bound_addr: SocketAddr) -> SocketAddr {
+    if bound_addr.ip().is_unspecified()
+        && let Some(ip) = local_network_ip()
+    {
+        return SocketAddr::new(ip, bound_addr.port());
+    }
+    bound_addr
+}
+
+fn local_ip_label(bound_addr: SocketAddr) -> String {
+    if !bound_addr.ip().is_unspecified() && !is_loopback(bound_addr.ip()) {
+        return bound_addr.ip().to_string();
+    }
+    local_network_ip()
+        .map(|ip| ip.to_string())
+        .unwrap_or_else(|| "unavailable".to_string())
+}
+
+fn local_network_ip() -> Option<IpAddr> {
+    let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).ok()?;
+    socket.connect((Ipv4Addr::new(192, 0, 2, 1), 80)).ok()?;
+    let ip = socket.local_addr().ok()?.ip();
+    if ip.is_unspecified() || is_loopback(ip) {
+        None
+    } else {
+        Some(ip)
+    }
+}
+
+fn proxy_url(addr: SocketAddr, path: &str) -> String {
+    let host = match addr.ip() {
+        IpAddr::V4(ip) => ip.to_string(),
+        IpAddr::V6(ip) => format!("[{ip}]"),
+    };
+    format!("http://{host}:{}{path}", addr.port())
+}
+
+fn proxy_auth_label(env_var: Option<&str>, proxy_auth: &ProxyAuth) -> String {
+    match (env_var, proxy_auth) {
+        (Some(env_var), ProxyAuth::Bearer(_)) => format!("bearer token from ${env_var}"),
+        (Some(env_var), ProxyAuth::None) => format!("disabled (${env_var} was not used)"),
+        (None, ProxyAuth::Bearer(_)) => "bearer token".to_string(),
+        (None, ProxyAuth::None) => "disabled".to_string(),
+    }
+}
+
+fn log_db_label(path: Option<&Path>) -> String {
+    path.map(|path| path.display().to_string())
+        .unwrap_or_else(|| "disabled".to_string())
+}
+
+fn log_retention_label(log_db: Option<&Path>, arg: Option<LogRetainRowsArg>) -> String {
+    if log_db.is_none() {
+        return "disabled".to_string();
+    }
+    match arg.unwrap_or_else(default_log_retain_rows_arg) {
+        LogRetainRowsArg::Rows(rows) => format!("{} completed rows", rows.get()),
+        LogRetainRowsArg::Unlimited => "unlimited".to_string(),
+    }
+}
+
+fn log_body_limit_label(log_db: Option<&Path>, arg: Option<LogMaxBodyBytesArg>) -> String {
+    if log_db.is_none() {
+        return "disabled".to_string();
+    }
+    match arg.unwrap_or_else(default_log_max_body_bytes_arg) {
+        LogMaxBodyBytesArg::Bytes(bytes) => {
+            format!("{} bytes per request/response body", bytes.get())
+        }
+        LogMaxBodyBytesArg::Unlimited => "unlimited".to_string(),
+    }
 }
 
 fn write_server_info(

@@ -1,184 +1,94 @@
 # codex-auth-proxy
 
-`codex-auth-proxy` is a narrow Responses API proxy for using the proxy host's
-Codex/ChatGPT login auth as the upstream credential.
+`codex-auth-proxy`는 프록시 서버 컴퓨터의 Codex/ChatGPT 로그인 auth를
+사용해서 외부 Codex 클라이언트에 Responses API 호환 엔드포인트를 제공하는
+작은 프록시입니다.
 
-It accepts:
+허용 엔드포인트:
 
 - `GET /health`
 - `POST /v1/responses`
 - `GET /v1/models`
 
-Everything else is rejected with `403`.
+나머지 요청은 `403`으로 거부합니다.
 
-## Run the proxy host
+## 서버 실행
 
-For copy/paste server startup steps, see
-[`PROXY_SERVER_RUN.md`](./PROXY_SERVER_RUN.md).
+자세한 실행 절차는 [PROXY_SERVER_RUN.md](./PROXY_SERVER_RUN.md)를 봅니다.
 
-First, log in on the machine that will run the proxy:
+프록시 서버 컴퓨터에서 먼저 로그인합니다.
 
 ```shell
 codex login
 ```
 
-Then start the proxy with a bearer token that remote clients must send:
+`codex-rs/codex-auth-proxy` 디렉터리에서 실행합니다.
 
 ```shell
-export CODEX_PROXY_TOKEN='change-this-long-random-value'
+export CODEX_PROXY_TOKEN='긴_랜덤_토큰'
 
-codex-auth-proxy \
-  --listen 0.0.0.0:8787 \
-  --proxy-token-env CODEX_PROXY_TOKEN
+./scripts/run-proxy.sh
 ```
 
-To also persist proxied request/response bodies to SQLite for local inspection:
+기본값:
+
+- listen: `0.0.0.0:8787`
+- DB: `./codex-auth-proxy.sqlite`
+- retention: 최신 완료 요청 `1000`개
+- body limit: request/response body 각각 `1 MiB`
+
+시작 로그에 외부 Codex에 넘길 `client_base_url`이 표시됩니다.
+
+```text
+client_base_url: http://<프록시_IP>:8787/v1
+```
+
+## 외부 Codex 설정
+
+외부 컴퓨터 설정 절차는 [REMOTE_CLIENT_SETUP.md](./REMOTE_CLIENT_SETUP.md)를
+봅니다.
+
+핵심은 외부 Codex에서 같은 `CODEX_PROXY_TOKEN`을 사용하고, provider
+`base_url`을 서버 로그의 `client_base_url`로 맞추는 것입니다.
 
 ```shell
-codex-auth-proxy \
-  --listen 0.0.0.0:8787 \
-  --proxy-token-env CODEX_PROXY_TOKEN \
-  --log-db ./codex-auth-proxy.sqlite
+export CODEX_PROXY_TOKEN='긴_랜덤_토큰'
+export CODEX_AUTH_PROXY_BASE_URL='서버_로그의_client_base_url'
+
+codex -p local-proxy \
+  -c "model_providers.local-auth-proxy.base_url=\"$CODEX_AUTH_PROXY_BASE_URL\""
 ```
 
-For local-only testing, omit `--listen` and the proxy will bind to an ephemeral
-loopback port. Non-loopback listeners require `--proxy-token-env` unless
-`--allow-unauthenticated` is explicitly set.
+외부 컴퓨터의 파일 작업, shell 실행, 테스트 실행은 외부 컴퓨터에서 직접
+일어나고, 모델 응답만 이 프록시를 통해 받습니다.
 
-Check that a remote client can reach the proxy with the configured token:
+## 로그와 뷰어
+
+`./scripts/run-proxy.sh`는 기본으로 SQLite 로그를 켭니다. 요청/응답 body는
+`proxy_requests` 테이블에 저장되고, token `usage`가 있으면 토큰 컬럼도
+채워집니다.
+
+브라우저 뷰어:
 
 ```shell
-curl --fail \
-  -H "Authorization: Bearer ${CODEX_PROXY_TOKEN}" \
-  http://PROXY_HOST:8787/health
+./scripts/run-viewer.sh
 ```
 
-## Configure the remote Codex client
+기본 주소:
 
-For copy/paste setup steps and IP-change usage, see
-[`REMOTE_CLIENT_SETUP.md`](./REMOTE_CLIENT_SETUP.md).
-
-On the machine running Codex against its own files, set the same proxy token:
-
-```shell
-export CODEX_PROXY_TOKEN='change-this-long-random-value'
+```text
+http://127.0.0.1:8788
 ```
 
-Add a provider to `~/.codex/config.toml`:
+뷰어에서는 검색, 필터, summary, flow 표시, tool I/O, raw request/response를
+확인할 수 있습니다. viewer는 민감한 로그를 보여주므로 loopback 주소에서만
+실행됩니다.
 
-```toml
-[model_providers.local-codex-auth-proxy]
-name = "local-codex-auth-proxy"
-base_url = "http://PROXY_HOST:8787/v1"
-wire_api = "responses"
-env_key = "CODEX_PROXY_TOKEN"
-```
+## 보안 주의
 
-Create `~/.codex/local-proxy.config.toml`:
-
-```toml
-model_provider = "local-codex-auth-proxy"
-model = "gpt-5.5"
-model_reasoning_effort = "medium"
-service_tier = "default"
-```
-
-Then run:
-
-```shell
-codex -p local-proxy
-```
-
-## Inspect logged traffic
-
-When `--log-db` is set, each proxied request is stored in the `proxy_requests`
-table. The row is inserted when the upstream request starts, then updated with
-the raw upstream response body when the response finishes. Streaming responses
-are stored as raw SSE text. If the upstream response includes token `usage`,
-the parsed token counts are stored in dedicated columns.
-
-When `--log-db` is set, the proxy keeps only the newest 1000 completed request
-rows by default. Use `--log-retain-rows ROWS` to choose a different limit, or
-`--log-retain-rows unlimited` to disable pruning explicitly. Pruning runs when
-the proxy opens the database and after each request completes, so an existing
-database with more rows is reduced on the next startup. In-progress rows are
-not deleted. SQLite may not immediately shrink the `.sqlite` file on disk after
-rows are deleted; run `VACUUM` manually if reclaiming disk space is necessary.
-
-The proxy also stores at most 1 MiB of request body text and 1 MiB of response
-body text per row by default. The `request_bytes` and `response_bytes` columns
-keep the original upstream body sizes, while `request_body_truncated` and
-`response_body_truncated` indicate whether the stored SQLite text was cut. Use
-`--log-max-body-bytes BYTES` to choose a different per-body limit, or
-`--log-max-body-bytes unlimited` to store full bodies explicitly. Upstream
-traffic is never truncated; only the SQLite copy is limited.
-
-The generated SQLite file can be opened directly in tools such as DBeaver.
-For a browser UI, run the local-only viewer:
-
-```shell
-codex-auth-proxy viewer \
-  --db ./codex-auth-proxy.sqlite \
-  --listen 127.0.0.1:8788
-```
-
-The viewer opens on a summary page first. It separates request messages,
-collapsible request JSON, extracted response text, response SSE events, and raw
-SSE. Large request strings and SSE event payloads are rendered only when their
-rows are expanded. The request list includes quick filters for errors, slow
-requests, high token usage, and truncated log rows. The search box scans row
-metadata plus stored request/response body text. The Summary view keeps only
-the highest-signal request/response metrics, highlights the main growth cause
-in one line, shows the top growth signals, and collapses long tool-name lists.
-The Tool I/O tab groups tool calls and tool outputs with the largest outputs
-ranked first. When search is active, visible row matches are highlighted,
-hidden/body matches get a `match` badge, and the selected Summary shows the
-first matching field with a short snippet.
-The left request list stays as a single chronological list. When a row belongs
-to the selected request's flow, the row shows its `step/total` position inline
-and the related rows are lightly outlined. Rows also show compact cause badges
-for errors, slow responses, high token usage, and truncated stored bodies. Flow
-grouping first uses tool call
-`call_id` links when a response tool call is followed by a matching request tool
-output. If no call chain is available, it falls back to nearby `/v1/responses`
-rows with the same User asked text. Raw request/response inspection tabs remain
-available but are visually de-emphasized compared with the main analysis tabs.
-
-Example query:
-
-```sql
-SELECT
-  id,
-  started_at,
-  client_ip,
-  method,
-  path,
-  model,
-  upstream_status,
-  latency_ms,
-  request_bytes,
-  response_bytes,
-  request_body_truncated,
-  response_body_truncated,
-  input_tokens,
-  output_tokens,
-  total_tokens,
-  cached_input_tokens,
-  reasoning_output_tokens,
-  error
-FROM proxy_requests
-ORDER BY started_at DESC;
-```
-
-## Security notes
-
-The remote client token only authorizes access to this proxy. The proxy removes
-the incoming `Authorization` and `Host` headers before forwarding upstream, then
-adds the proxy host's current Codex/ChatGPT auth headers.
-
-Do not expose the proxy without a strong `--proxy-token-env` value and network
-controls. Anyone who can call the proxy can spend the proxy host's Codex account
-quota through the accepted endpoints.
-
-The SQLite log database can contain prompts, file contents, shell output,
-patches, and error logs from `/v1/responses`. Treat it as sensitive data.
+- `CODEX_PROXY_TOKEN`은 OpenAI API key가 아니라 프록시 접근용 토큰입니다.
+- 이 프록시를 호출할 수 있는 사용자는 프록시 서버 컴퓨터의 Codex 계정 사용량을
+  소비할 수 있습니다.
+- `CODEX_PROXY_TOKEN=test`는 테스트용입니다. 실제 사용 시 긴 랜덤값을 씁니다.
+- SQLite DB에는 프롬프트, 코드, shell 출력, 패치 내용이 들어갈 수 있으므로
+  민감 데이터로 취급합니다.

@@ -1,8 +1,9 @@
 # 프록시 서버 실행
 
-이 문서는 프록시 서버 컴퓨터에서 `codex-auth-proxy`를 실행하는 절차입니다.
+프록시 서버 컴퓨터에서 `codex-auth-proxy`를 켜고, 외부 Codex에 전달할 값을
+확인하는 문서입니다.
 
-## 준비
+## 1. 준비
 
 프록시 서버 컴퓨터에서 Codex/ChatGPT 로그인 auth가 있어야 합니다.
 
@@ -10,207 +11,120 @@
 codex login
 ```
 
-현재 로그인 상태로 모델 호출이 가능한지도 한 번 확인합니다.
+로그인 상태 확인:
 
 ```shell
 codex
 ```
 
-## 현재 IP 확인
+## 2. 프록시 실행
 
-외부 컴퓨터가 접속할 프록시 서버 IP를 확인합니다.
-
-macOS:
+`codex-rs/codex-auth-proxy` 디렉터리에서 실행합니다.
 
 ```shell
-ipconfig getifaddr en0
+export CODEX_PROXY_TOKEN='긴_랜덤_토큰'
+
+./scripts/run-proxy.sh
 ```
 
-Wi-Fi가 아니라 유선 LAN을 쓰는 경우 `en0` 대신 다른 인터페이스일 수
-있습니다.
+기본값:
 
-대안:
+| 항목 | 값 |
+| --- | --- |
+| listen | `0.0.0.0:8787` |
+| DB | `./codex-auth-proxy.sqlite` |
+| retention | 최신 완료 요청 `1000`개 |
+| body limit | request/response body 각각 `1048576` bytes |
+
+값을 바꿀 때만 환경변수를 추가합니다.
 
 ```shell
-ifconfig | grep 'inet ' | grep -v '127.0.0.1'
+CODEX_AUTH_PROXY_LISTEN=0.0.0.0:8787 \
+CODEX_AUTH_PROXY_DB=./codex-auth-proxy.sqlite \
+CODEX_AUTH_PROXY_RETAIN_ROWS=3000 \
+CODEX_AUTH_PROXY_MAX_BODY_BYTES=2097152 \
+./scripts/run-proxy.sh
 ```
 
-## 서버 실행
+## 3. 외부 Codex에 전달할 값
 
-repo의 `codex-rs` 디렉터리에서 실행합니다.
-
-```shell
-export CODEX_PROXY_TOKEN=test
-
-cargo run -p codex-auth-proxy -- \
-  --listen 0.0.0.0:8787 \
-  --proxy-token-env CODEX_PROXY_TOKEN \
-  --log-db ./codex-auth-proxy.sqlite
-```
-
-정상 실행되면 터미널에 아래와 비슷하게 표시됩니다.
+서버가 켜지면 아래처럼 시작 로그가 나옵니다.
 
 ```text
 codex-auth-proxy listening on 0.0.0.0:8787
+  local_ip: <프록시_IP>
+  health: http://<프록시_IP>:8787/health
+  client_base_url: http://<프록시_IP>:8787/v1
+  proxy_auth: bearer token from $CODEX_PROXY_TOKEN
+  log_db: ./codex-auth-proxy.sqlite
+  retention: 1000 completed rows
+  body_limit: 1048576 bytes per request/response body
 ```
 
-`--log-db`를 사용하면 기본으로 SQLite에 최신 완료 요청 1000개만 남깁니다.
-이미 DB에 3000개가 쌓여 있어도 다시 실행하면 서버 시작 시 오래된 완료 row가
-삭제됩니다. 이후 요청이 완료될 때마다 같은 정리가 다시 실행됩니다. 진행 중인
-요청 row는 삭제하지 않습니다.
+외부 Codex에 넘길 값은 두 개입니다.
 
-또한 기본으로 request body와 response body는 각각 최대 1 MiB만 SQLite에
-저장합니다. upstream으로 보내고 받는 실제 요청/응답은 자르지 않고, DB에
-저장하는 사본만 제한합니다. 원본 크기는 `request_bytes`, `response_bytes`에
-남고, 잘렸는지는 `request_body_truncated`, `response_body_truncated`로
-확인합니다.
+- `CODEX_PROXY_TOKEN`
+- `client_base_url`
 
-다른 개수를 유지하려면 `--log-retain-rows`를 추가합니다.
+외부 컴퓨터 설정은 [REMOTE_CLIENT_SETUP.md](./REMOTE_CLIENT_SETUP.md)를
+사용합니다.
 
-```shell
-cargo run -p codex-auth-proxy -- \
-  --listen 0.0.0.0:8787 \
-  --proxy-token-env CODEX_PROXY_TOKEN \
-  --log-db ./codex-auth-proxy.sqlite \
-  --log-retain-rows 3000
-```
+## 4. 헬스체크
 
-무제한으로 계속 저장하려면 명시적으로 `unlimited`를 사용합니다.
-
-```shell
-cargo run -p codex-auth-proxy -- \
-  --listen 0.0.0.0:8787 \
-  --proxy-token-env CODEX_PROXY_TOKEN \
-  --log-db ./codex-auth-proxy.sqlite \
-  --log-retain-rows unlimited
-```
-
-body 저장 크기 제한을 바꾸려면 `--log-max-body-bytes`를 추가합니다.
-
-```shell
-cargo run -p codex-auth-proxy -- \
-  --listen 0.0.0.0:8787 \
-  --proxy-token-env CODEX_PROXY_TOKEN \
-  --log-db ./codex-auth-proxy.sqlite \
-  --log-max-body-bytes 2097152
-```
-
-body도 무제한 저장하려면 명시적으로 `unlimited`를 사용합니다.
-
-```shell
-cargo run -p codex-auth-proxy -- \
-  --listen 0.0.0.0:8787 \
-  --proxy-token-env CODEX_PROXY_TOKEN \
-  --log-db ./codex-auth-proxy.sqlite \
-  --log-max-body-bytes unlimited
-```
-
-`--log-db`를 빼면 SQLite 요청/응답 저장 없이 프록시만 실행합니다.
-
-```shell
-export CODEX_PROXY_TOKEN=test
-
-cargo run -p codex-auth-proxy -- \
-  --listen 0.0.0.0:8787 \
-  --proxy-token-env CODEX_PROXY_TOKEN
-```
-
-## 헬스체크
-
-프록시 서버 컴퓨터에서 먼저 확인합니다.
+프록시 서버 컴퓨터:
 
 ```shell
 curl -i \
-  -H "Authorization: Bearer test" \
+  -H "Authorization: Bearer ${CODEX_PROXY_TOKEN}" \
   http://127.0.0.1:8787/health
 ```
 
-외부 컴퓨터에서는 `127.0.0.1` 대신 프록시 서버 IP를 사용합니다.
+외부 컴퓨터:
 
 ```shell
 curl -i \
-  -H "Authorization: Bearer test" \
-  http://192.168.0.94:8787/health
+  -H "Authorization: Bearer ${CODEX_PROXY_TOKEN}" \
+  http://<프록시_IP>:8787/health
 ```
 
-정상이라면 `200 OK`와 `{"status":"ok"}` 응답이 나옵니다.
+정상이면 `200 OK`와 `{"status":"ok"}`가 나옵니다.
 
-## 로그 확인
+## 5. 뷰어 실행
 
-서버 터미널에는 요청 수신/완료 로그가 출력됩니다.
-
-```text
-request received id=... client_ip=... method=POST path=/v1/responses ...
-request completed id=... status=200 response_bytes=... latency_ms=... error=-
-```
-
-`--log-db ./codex-auth-proxy.sqlite`를 사용하면 요청/응답 body가 SQLite에
-저장됩니다. DBeaver에서 `codex-auth-proxy.sqlite` 파일을 열어
-`proxy_requests` 테이블을 조회할 수 있습니다. upstream 응답에 token
-`usage`가 포함되면 `input_tokens`, `output_tokens`, `total_tokens`,
-`cached_input_tokens`, `reasoning_output_tokens` 컬럼도 채워집니다.
-body 저장이 잘린 row는 `request_body_truncated`,
-`response_body_truncated` 컬럼이 `true`로 표시됩니다.
-
-row 삭제 후에도 SQLite 파일 크기는 바로 줄지 않을 수 있습니다. 실제 디스크
-공간 회수가 필요하면 서버와 viewer를 끈 뒤 SQLite 도구에서 `VACUUM`을
-실행합니다.
-
-## 로컬 HTML 뷰어 실행
-
-SQLite에 저장된 요청/응답을 브라우저에서 보려면 별도 터미널에서 viewer를
-실행합니다.
+별도 터미널에서 실행합니다.
 
 ```shell
-cargo run -p codex-auth-proxy -- viewer \
-  --db ./codex-auth-proxy.sqlite \
-  --listen 127.0.0.1:8788
+./scripts/run-viewer.sh
 ```
 
-브라우저에서 아래 주소를 엽니다.
+브라우저 주소:
 
 ```text
 http://127.0.0.1:8788
 ```
 
-viewer에서는 먼저 요약 화면이 보입니다. 요청은 message 목록과 JSON tree로
-나눠 볼 수 있고, 응답은 추출된 텍스트, SSE event별 접힘 뷰, raw SSE로
-나눠 볼 수 있습니다. token usage가 기록된 row는 Summary에서 토큰 수를
-확인할 수 있습니다. 긴 요청 문자열과 SSE event payload는 해당 row를 펼쳤을
-때 렌더링됩니다. 왼쪽 목록 위의 검색창은 row 메타데이터와 저장된
-request/response body 텍스트를 검색합니다. 빠른 필터로 에러, 느린 요청,
-토큰 사용량이 큰 요청, body 저장이 잘린 요청만 볼 수 있습니다. Summary는
-중요도가 높은 request/response 지표만 남기고, 요청이 커진 가장 큰 원인을 한
-줄로 먼저 강조한 뒤 주요 원인과 tool 이름 목록은 압축해서 보여줍니다. Tool I/O
-탭은 tool call과 tool output만 모아서 큰 output 순서로 보여줍니다. 검색 중에는
-목록에 보이는 매칭 텍스트를 강조하고, 숨은 메타데이터나 저장 본문에서 매칭된
-row에는 `match` 배지를 붙이며, 선택한 Summary에는 첫 매칭 위치와 snippet을
-표시합니다.
-왼쪽 요청 목록은 하나의 시간순 목록으로 유지됩니다. 선택한 row의 flow에
-포함된 row에는 목록 안에서 `step/total` 번호와 옅은 묶음 테두리가 표시됩니다.
-또한 에러, 느린 응답, 높은 토큰 사용량, 잘린 저장 본문은 작은 cause badge로
-표시됩니다. Flow는 response의 tool call `call_id`와 다음 request의 tool output
-`call_id`가 이어지면 그 체인을 우선으로 묶습니다. 체인을 찾지 못하면 같은 User
-asked 텍스트 기준으로 주변 `/v1/responses` row를 묶습니다. 원본 request/response
-확인용 탭은 남아 있지만 기본 분석 탭보다 작고 흐리게 표시됩니다.
+다른 DB나 포트를 쓰는 경우:
 
-viewer는 민감한 요청/응답 내용을 보여주므로 loopback 주소에서만
-실행됩니다. `0.0.0.0` 같은 외부 접속 주소로는 실행할 수 없습니다.
+```shell
+CODEX_AUTH_PROXY_DB=./codex-auth-proxy.sqlite \
+CODEX_AUTH_PROXY_VIEWER_LISTEN=127.0.0.1:8790 \
+./scripts/run-viewer.sh
+```
 
-## 종료
+viewer는 SQLite 로그 내용을 보여주므로 외부 공개 주소로 열지 않습니다.
 
-서버가 실행 중인 터미널에서 `Ctrl-C`로 종료합니다.
+## 6. 종료
 
-서버가 꺼져 있으면 외부 컴퓨터의 `codex -p local-proxy`는 동작하지
-않습니다.
+프록시나 viewer가 실행 중인 터미널에서 `Ctrl-C`를 누릅니다.
+
+서버가 꺼져 있으면 외부 컴퓨터의 `codex -p local-proxy`는 동작하지 않습니다.
 
 ## 주의사항
 
 - `CODEX_PROXY_TOKEN=test`는 테스트용입니다. 실제 사용 시 긴 랜덤값으로
   바꿉니다.
-- `--listen 0.0.0.0:8787`은 같은 네트워크의 다른 컴퓨터가 접속할 수 있게
-  엽니다. 반드시 `--proxy-token-env CODEX_PROXY_TOKEN`을 같이 사용합니다.
-- 이 프록시를 호출할 수 있는 사용자는 프록시 서버 컴퓨터의 Codex 계정
-  사용량을 소비할 수 있습니다.
-- SQLite DB에는 프롬프트, 코드, shell 출력, 패치 내용이 들어갈 수
-  있으므로 민감 데이터로 취급합니다.
+- `0.0.0.0:8787`은 같은 네트워크의 다른 컴퓨터가 접속할 수 있게 엽니다.
+- 프록시를 호출할 수 있는 사용자는 프록시 서버 컴퓨터의 Codex 계정 사용량을
+  소비할 수 있습니다.
+- SQLite DB에는 프롬프트, 코드, shell 출력, 패치 내용이 들어갈 수 있으므로
+  민감 데이터로 취급합니다.

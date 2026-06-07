@@ -52,6 +52,8 @@ pub(crate) fn run_viewer(args: ViewerArgs) -> Result<()> {
         .to_ip()
         .ok_or_else(|| anyhow!("viewer did not expose a TCP listen address"))?;
     eprintln!("codex-auth-proxy viewer listening on http://{bound_addr}");
+    eprintln!("  db: {}", args.db.display());
+    eprintln!("  viewer_url: http://{bound_addr}");
 
     for request in server.incoming_requests() {
         let runtime = runtime.clone();

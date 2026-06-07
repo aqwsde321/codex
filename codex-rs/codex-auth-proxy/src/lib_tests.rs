@@ -2,6 +2,7 @@ use super::*;
 use clap::Parser;
 use pretty_assertions::assert_eq;
 use std::num::NonZeroU64;
+use std::path::Path;
 
 #[test]
 fn route_for_allows_only_responses_and_models() {
@@ -230,5 +231,57 @@ fn request_log_body_limit_allows_unlimited() {
     assert_eq!(
         request_log_body_limit(Some(LogMaxBodyBytesArg::Unlimited)),
         None
+    );
+}
+
+#[test]
+fn startup_log_labels_show_log_defaults_when_db_enabled() {
+    let db = Path::new("proxy.sqlite");
+
+    assert_eq!(
+        log_retention_label(Some(db), /*arg*/ None),
+        "1000 completed rows"
+    );
+    assert_eq!(
+        log_body_limit_label(Some(db), /*arg*/ None),
+        "1048576 bytes per request/response body"
+    );
+}
+
+#[test]
+fn startup_log_labels_show_disabled_when_db_is_disabled() {
+    assert_eq!(
+        log_retention_label(/*log_db*/ None, /*arg*/ None),
+        "disabled"
+    );
+    assert_eq!(
+        log_body_limit_label(/*log_db*/ None, /*arg*/ None),
+        "disabled"
+    );
+}
+
+#[test]
+fn startup_log_labels_show_unlimited_values() {
+    let db = Path::new("proxy.sqlite");
+
+    assert_eq!(
+        log_retention_label(Some(db), Some(LogRetainRowsArg::Unlimited)),
+        "unlimited"
+    );
+    assert_eq!(
+        log_body_limit_label(Some(db), Some(LogMaxBodyBytesArg::Unlimited)),
+        "unlimited"
+    );
+}
+
+#[test]
+fn proxy_url_formats_ipv4_and_ipv6_addresses() {
+    assert_eq!(
+        proxy_url("127.0.0.1:8787".parse().expect("addr"), "/v1"),
+        "http://127.0.0.1:8787/v1"
+    );
+    assert_eq!(
+        proxy_url("[::1]:8787".parse().expect("addr"), "/health"),
+        "http://[::1]:8787/health"
     );
 }
