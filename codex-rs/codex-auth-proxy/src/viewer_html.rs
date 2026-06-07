@@ -142,6 +142,64 @@ const STYLE: &str = r#"
       overflow: auto;
     }
 
+    .flow-step-badge {
+      flex: 0 0 auto;
+      width: 20px;
+      height: 20px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 999px;
+      background: var(--chip);
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 700;
+    }
+
+    .row.flow-step-row {
+      position: relative;
+      width: calc(100% - 16px);
+      margin-left: 8px;
+      margin-right: 8px;
+      padding-left: 12px;
+      border-left: 1px solid #b7ddd8;
+      border-right: 1px solid #b7ddd8;
+      border-bottom-color: #dfeeea;
+      background: #fbfcfe;
+    }
+
+    .row.flow-step-row::before {
+      content: "";
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      left: 0;
+      width: 3px;
+      background: #79bfb5;
+      pointer-events: none;
+    }
+
+    .row.flow-run-start {
+      margin-top: 8px;
+      border-top: 1px solid #b7ddd8;
+      border-radius: 7px 7px 0 0;
+    }
+
+    .row.flow-run-end {
+      margin-bottom: 8px;
+      border-bottom: 1px solid #b7ddd8;
+      border-radius: 0 0 7px 7px;
+    }
+
+    .row.flow-run-start.flow-run-end {
+      border-radius: 7px;
+    }
+
+    .row.active .flow-step-badge {
+      background: var(--accent);
+      color: #fff;
+    }
+
     .row {
       width: 100%;
       height: auto;
@@ -157,7 +215,19 @@ const STYLE: &str = r#"
 
     .row.active { background: #eef7f5; }
     .row-title, .row-sub { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .row-title { font-weight: 600; }
+    .row-title {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      min-width: 0;
+      font-weight: 600;
+    }
+    .row-title-text {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
     .row-sub, .row-meta, .empty { color: var(--muted); font-size: 12px; }
     .row-meta { text-align: right; }
 
@@ -748,7 +818,7 @@ const STYLE: &str = r#"
       }
       aside { border-right: 0; border-bottom: 1px solid var(--line); }
       .filters { padding: 8px; }
-      .list { height: 32vh; flex: 0 0 auto; }
+      .list { height: 46vh; flex: 0 0 auto; }
       section {
         display: block;
         overflow: visible;

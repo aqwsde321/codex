@@ -130,10 +130,13 @@ requests, high token usage, and truncated log rows. The search box scans row
 metadata plus stored request/response body text. The Summary view includes a
 Growth Analysis panel for the largest request growth signals, and the Tool I/O
 tab groups tool calls and tool outputs with the largest outputs ranked first.
-The Flow tab first groups rows by tool call `call_id` links when a response
-tool call is followed by a matching request tool output. If no call chain is
-available, it falls back to nearby `/v1/responses` rows with the same User
-asked text, then shows the result as ordered steps.
+The left request list stays as a single chronological list. When a row belongs
+to the selected request's flow, the row shows its flow step number inline and
+the related rows are lightly outlined. The Flow tab shows the same grouping in
+detail. Flow grouping first uses tool call
+`call_id` links when a response tool call is followed by a matching request tool
+output. If no call chain is available, it falls back to nearby `/v1/responses`
+rows with the same User asked text.
 
 Example query:
 

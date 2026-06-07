@@ -17,6 +17,7 @@ pub(crate) const JS: &str = r#"
       flow: null,
       flowSelected: null,
       flowError: null,
+      flowLoading: false,
     };
 
     const listEl = document.getElementById("list");
@@ -58,6 +59,10 @@ pub(crate) const JS: &str = r#"
         state.selected = null;
         state.detail = null;
         state.derived = null;
+        state.flow = null;
+        state.flowSelected = null;
+        state.flowError = null;
+        state.flowLoading = false;
         renderDetail();
       } else if (!state.selected || !requests.some((request) => request.id === state.selected)) {
         await selectRequest(requests[0].id);
@@ -67,19 +72,27 @@ pub(crate) const JS: &str = r#"
     }
 
     async function selectRequest(id) {
+      const keepFlow = state.flow && (state.flow.rows || []).some((row) => row.id === id);
       state.selected = id;
       state.eventLimit = DEFAULT_EVENT_LIMIT;
-      state.flow = null;
-      state.flowSelected = null;
+      if (keepFlow) {
+        state.flowSelected = id;
+      } else {
+        state.flow = null;
+        state.flowSelected = null;
+      }
       state.flowError = null;
+      state.flowLoading = false;
       state.detail = await fetchJson(`/api/requests/${encodeURIComponent(id)}`);
       state.derived = deriveDetail(state.detail);
       renderList();
       renderDetail();
+      ensureFlowLoaded(id);
     }
 
     function renderList() {
       listEl.replaceChildren();
+      if (state.selected) ensureFlowLoaded(state.selected);
       if (state.requests.length === 0) {
         const empty = document.createElement("div");
         empty.className = "empty";
@@ -88,32 +101,59 @@ pub(crate) const JS: &str = r#"
         listEl.appendChild(empty);
         return;
       }
-      for (const request of state.requests) {
-        const row = document.createElement("button");
-        row.type = "button";
-        row.className = "row";
-        row.classList.toggle("active", request.id === state.selected);
-        row.addEventListener("click", () => selectRequest(request.id));
 
-        const title = document.createElement("div");
-        title.className = "row-title";
-        title.textContent = request.model || request.path;
+      const flowStepById = new Map(currentFlowRows().map((row, index) => [row.id, index + 1]));
+      state.requests.forEach((request, index) => {
+        const flowIndex = flowStepById.get(request.id) || null;
+        const previousInFlow = index > 0 && flowStepById.has(state.requests[index - 1].id);
+        const nextInFlow = index + 1 < state.requests.length && flowStepById.has(state.requests[index + 1].id);
+        listEl.appendChild(requestRow(request, flowIndex, { previousInFlow, nextInFlow }));
+      });
+    }
 
-        const status = document.createElement("div");
-        status.className = `status-code ${isErrorStatus(request.upstream_status) ? "error" : ""}`;
-        status.textContent = request.upstream_status || "-";
+    function currentFlowRows() {
+      if (!state.flow || state.flowSelected !== state.selected) return [];
+      return state.flow.rows || [];
+    }
 
-        const sub = document.createElement("div");
-        sub.className = "row-sub";
-        sub.textContent = `${request.method} ${request.path}${request.query ? "?" + request.query : ""}`;
-
-        const meta = document.createElement("div");
-        meta.className = "row-meta";
-        meta.textContent = rowMeta(request);
-
-        row.append(title, status, sub, meta);
-        listEl.appendChild(row);
+    function requestRow(request, flowIndex, flowGroup) {
+      const row = document.createElement("button");
+      row.type = "button";
+      row.className = "row";
+      row.classList.toggle("flow-step-row", flowIndex != null);
+      if (flowIndex != null) {
+        row.classList.toggle("flow-run-start", !flowGroup.previousInFlow);
+        row.classList.toggle("flow-run-end", !flowGroup.nextInFlow);
       }
+      row.classList.toggle("active", request.id === state.selected);
+      row.addEventListener("click", () => selectRequest(request.id));
+
+      const title = document.createElement("div");
+      title.className = "row-title";
+      if (flowIndex != null) {
+        const step = document.createElement("span");
+        step.className = "flow-step-badge";
+        step.textContent = flowIndex;
+        title.appendChild(step);
+      }
+      const titleText = document.createElement("span");
+      titleText.className = "row-title-text";
+      titleText.textContent = request.model || request.path;
+      title.appendChild(titleText);
+
+      const status = document.createElement("div");
+      status.className = `status-code ${isErrorStatus(request.upstream_status) ? "error" : ""}`;
+      status.textContent = request.upstream_status || "-";
+
+      const sub = document.createElement("div");
+      sub.className = "row-sub";
+      sub.textContent = `${request.method} ${request.path}${request.query ? "?" + request.query : ""}`;
+
+      const meta = document.createElement("div");
+      meta.className = "row-meta";
+      meta.textContent = rowMeta(request);
+      row.append(title, status, sub, meta);
+      return row;
     }
 
     function requestsUrl() {
@@ -514,12 +554,7 @@ pub(crate) const JS: &str = r#"
     }
 
     function renderFlow(detail) {
-      if (state.flowSelected !== detail.id) {
-        state.flowSelected = detail.id;
-        state.flow = null;
-        state.flowError = null;
-        loadFlow(detail.id);
-      }
+      ensureFlowLoaded(detail.id);
 
       if (state.flowError) {
         bodyEl.append(textBlock(state.flowError.stack || String(state.flowError)));
@@ -557,6 +592,7 @@ pub(crate) const JS: &str = r#"
     }
 
     async function loadFlow(id) {
+      state.flowLoading = true;
       try {
         const flow = await fetchJson(`/api/requests/${encodeURIComponent(id)}/flow`);
         if (state.selected !== id) return;
@@ -565,8 +601,22 @@ pub(crate) const JS: &str = r#"
       } catch (error) {
         if (state.selected !== id) return;
         state.flowError = error;
+      } finally {
+        if (state.selected === id) state.flowLoading = false;
       }
+      if (state.selected === id) renderList();
       if (state.selected === id && state.view === "flow") renderDetail();
+    }
+
+    function ensureFlowLoaded(id) {
+      if (state.flowSelected !== id) {
+        state.flowSelected = id;
+        state.flow = null;
+        state.flowError = null;
+        state.flowLoading = false;
+      }
+      if (state.flow || state.flowError || state.flowLoading) return;
+      loadFlow(id);
     }
 
     function flowStep(row, index) {
