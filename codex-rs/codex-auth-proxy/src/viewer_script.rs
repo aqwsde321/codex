@@ -14,6 +14,9 @@ pub(crate) const JS: &str = r#"
       filter: "all",
       search: "",
       searchTimer: null,
+      flow: null,
+      flowSelected: null,
+      flowError: null,
     };
 
     const listEl = document.getElementById("list");
@@ -66,6 +69,9 @@ pub(crate) const JS: &str = r#"
     async function selectRequest(id) {
       state.selected = id;
       state.eventLimit = DEFAULT_EVENT_LIMIT;
+      state.flow = null;
+      state.flowSelected = null;
+      state.flowError = null;
       state.detail = await fetchJson(`/api/requests/${encodeURIComponent(id)}`);
       state.derived = deriveDetail(state.detail);
       renderList();
@@ -149,6 +155,8 @@ pub(crate) const JS: &str = r#"
 
       if (state.view === "summary") {
         renderSummary(detail, derived);
+      } else if (state.view === "flow") {
+        renderFlow(detail);
       } else if (state.view === "messages") {
         renderRequestMessages(derived.requestInfo);
       } else if (state.view === "tools") {
@@ -503,6 +511,123 @@ pub(crate) const JS: &str = r#"
       content.appendChild(grid);
       content.appendChild(eventTypesDisclosure(response.eventCounts));
       bodyEl.appendChild(content);
+    }
+
+    function renderFlow(detail) {
+      if (state.flowSelected !== detail.id) {
+        state.flowSelected = detail.id;
+        state.flow = null;
+        state.flowError = null;
+        loadFlow(detail.id);
+      }
+
+      if (state.flowError) {
+        bodyEl.append(textBlock(state.flowError.stack || String(state.flowError)));
+        return;
+      }
+      if (!state.flow) {
+        bodyEl.append(notice("Loading request flow."));
+        return;
+      }
+      if (state.flow.length === 0) {
+        bodyEl.append(textBlock("No response requests for this flow."));
+        return;
+      }
+
+      const selectedIndex = state.flow.findIndex((row) => row.id === detail.id);
+      bodyEl.append(notice(`Flow groups rows with the same User asked text when available, then falls back to nearby /v1/responses rows. ${state.flow.length} steps, selected row is step ${selectedIndex >= 0 ? selectedIndex + 1 : "-"}.`));
+      const list = document.createElement("div");
+      list.className = "flow-list";
+      state.flow.forEach((row, index) => list.appendChild(flowStep(row, index)));
+      bodyEl.appendChild(list);
+    }
+
+    async function loadFlow(id) {
+      try {
+        const flow = await fetchJson(`/api/requests/${encodeURIComponent(id)}/flow`);
+        if (state.selected !== id) return;
+        state.flow = flow;
+        state.flowError = null;
+      } catch (error) {
+        if (state.selected !== id) return;
+        state.flowError = error;
+      }
+      if (state.selected === id && state.view === "flow") renderDetail();
+    }
+
+    function flowStep(row, index) {
+      const isSelected = row.id === state.selected;
+      const derived = isSelected ? state.derived : null;
+      const request = derived?.requestInfo;
+      const toolCalls = request?.toolCalls || [];
+      const card = document.createElement("div");
+      card.className = "flow-step";
+      card.classList.toggle("active", isSelected);
+
+      const head = document.createElement("div");
+      head.className = "flow-step-head";
+      const titleBlock = document.createElement("div");
+      const title = document.createElement("h3");
+      title.className = "flow-step-title";
+      title.textContent = `Step ${index + 1}${isSelected ? " · selected" : ""}`;
+      const sub = document.createElement("div");
+      sub.className = "flow-step-sub";
+      sub.textContent = `${formatTimestamp(row.started_at)} · ${row.model || "-"} · ${row.id}`;
+      titleBlock.append(title, sub);
+
+      const open = document.createElement("button");
+      open.type = "button";
+      open.textContent = "Open";
+      open.addEventListener("click", () => selectRequest(row.id));
+      head.append(titleBlock, open);
+
+      card.append(
+        head,
+        metrics([
+          ["Status", row.upstream_status || "-"],
+          ["Duration", formatDurationMs(row.latency_ms)],
+          ["Total tokens", formatCount(row.total_tokens)],
+          ["Tool calls", derived ? toolCalls.length : "-"],
+          ["Tool outputs", derived ? request.toolOutputCount || 0 : "-"],
+          ["Tool output chars", derived ? formatChars(request.toolOutputChars || 0) : "-"],
+        ]),
+        chipsBlock("Actions", derived ? flowActionNames(derived) : []),
+        flowStepBody(row, derived)
+      );
+      return card;
+    }
+
+    function flowActionNames(derived) {
+      const names = importantActions(derived).map((action) => action.name).filter(Boolean);
+      if (names.length > 0) return names;
+      return (derived.requestInfo.toolCalls || []).map((call) => call.name).filter(Boolean);
+    }
+
+    function flowStepBody(row, derived) {
+      const body = document.createElement("div");
+      body.className = "flow-step-body";
+      if (!derived) {
+        body.append(flowSnippet("Step detail", "Open this step to inspect request messages, tool I/O, and response text."));
+        return body;
+      }
+      body.append(
+        flowSnippet("Request", derived.requestInfo.latestUserText || derived.requestInfo.latestText || "(empty)"),
+        flowSnippet("Assistant", responseTextForSummary(row, derived)),
+        flowSnippet("Largest tool output", derived.requestInfo.toolOutputs?.[0]?.text || "(empty)")
+      );
+      return body;
+    }
+
+    function flowSnippet(title, value) {
+      const item = document.createElement("div");
+      const label = document.createElement("div");
+      label.className = "flow-snippet-title";
+      label.textContent = title;
+      const block = document.createElement("pre");
+      block.className = "flow-snippet";
+      block.textContent = preview(value, 900);
+      item.append(label, block);
+      return item;
     }
 
     function growthAnalysis(detail, derived) {

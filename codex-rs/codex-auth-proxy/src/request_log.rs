@@ -1,3 +1,4 @@
+use std::cmp::Ordering;
 use std::num::NonZeroU64;
 use std::path::Path;
 use std::time::Duration;
@@ -158,6 +159,41 @@ pub(crate) struct RequestLogDetail {
     pub(crate) error: Option<String>,
 }
 
+#[derive(Debug, Clone, sqlx::FromRow)]
+struct RequestLogFlowSeed {
+    started_at: String,
+    client_ip: Option<String>,
+    path: String,
+    request_body: Option<String>,
+}
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+struct RequestLogFlowCandidate {
+    id: String,
+    started_at: String,
+    started_at_seconds: f64,
+    completed_at: Option<String>,
+    client_ip: Option<String>,
+    method: String,
+    path: String,
+    query: Option<String>,
+    model: Option<String>,
+    upstream_status: Option<i64>,
+    latency_ms: Option<i64>,
+    request_bytes: Option<i64>,
+    response_bytes: Option<i64>,
+    request_body_truncated: bool,
+    response_body_truncated: bool,
+    input_tokens: Option<i64>,
+    output_tokens: Option<i64>,
+    total_tokens: Option<i64>,
+    cached_input_tokens: Option<i64>,
+    reasoning_output_tokens: Option<i64>,
+    error: Option<String>,
+    request_body: Option<String>,
+    distance: f64,
+}
+
 impl RequestLogDetail {
     fn has_no_token_usage(&self) -> bool {
         self.input_tokens.is_none()
@@ -175,6 +211,10 @@ impl RequestLogDetail {
         self.reasoning_output_tokens = usage.reasoning_output_tokens;
     }
 }
+
+const FLOW_WINDOW_SECONDS: f64 = 600.0;
+const FLOW_CANDIDATE_LIMIT: i64 = 200;
+const FLOW_ROW_LIMIT: i64 = 40;
 
 impl RequestLogger {
     pub(crate) async fn open(path: &Path) -> Result<Self> {
@@ -433,22 +473,159 @@ WHERE id = ?
             return Ok(None);
         };
 
-        if detail.has_no_token_usage()
-            && let Some(response_body) = detail.response_body.as_deref()
-        {
-            let usage = token_usage_from_response_body(response_body.as_bytes());
-            if !usage.is_empty() {
-                self.update_token_usage(id, usage).await?;
-                detail.apply_token_usage(usage);
-            }
-        }
+        self.backfill_detail_token_usage(&mut detail).await?;
 
         Ok(Some(detail))
+    }
+
+    pub(crate) async fn flow_around(&self, id: &str) -> Result<Vec<RequestLogSummary>> {
+        let Some(selected) = sqlx::query_as::<_, RequestLogFlowSeed>(
+            r#"
+SELECT
+  started_at,
+  client_ip,
+  path,
+  request_body
+FROM proxy_requests
+WHERE id = ?
+"#,
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await
+        .context("reading selected proxy request flow row")?
+        else {
+            return Ok(Vec::new());
+        };
+
+        if selected.path != "/v1/responses" {
+            return Ok(Vec::new());
+        }
+
+        let selected_user_asked =
+            user_asked_key_from_request_body(selected.request_body.as_deref());
+        let mut candidates = sqlx::query_as::<_, RequestLogFlowCandidate>(
+            r#"
+SELECT
+  r.id,
+  r.started_at,
+  CAST(r.started_at AS REAL) AS started_at_seconds,
+  r.completed_at,
+  r.client_ip,
+  r.method,
+  r.path,
+  r.query,
+  r.model,
+  r.upstream_status,
+  r.latency_ms,
+  r.request_bytes,
+  r.response_bytes,
+  r.request_body_truncated,
+  r.response_body_truncated,
+  r.input_tokens,
+  r.output_tokens,
+  r.total_tokens,
+  r.cached_input_tokens,
+  r.reasoning_output_tokens,
+  r.error,
+  r.request_body,
+  ABS(CAST(r.started_at AS REAL) - CAST(? AS REAL)) AS distance
+FROM proxy_requests AS r
+WHERE r.path = '/v1/responses'
+  AND ABS(CAST(r.started_at AS REAL) - CAST(? AS REAL)) <= ?
+  AND (
+    (? IS NULL AND r.client_ip IS NULL)
+    OR r.client_ip = ?
+  )
+ORDER BY
+  distance,
+  CAST(r.started_at AS REAL),
+  r.started_at,
+  r.id
+LIMIT ?
+"#,
+        )
+        .bind(&selected.started_at)
+        .bind(&selected.started_at)
+        .bind(FLOW_WINDOW_SECONDS)
+        .bind(selected.client_ip.as_deref())
+        .bind(selected.client_ip.as_deref())
+        .bind(FLOW_CANDIDATE_LIMIT)
+        .fetch_all(&self.pool)
+        .await
+        .context("reading proxy request flow rows")?;
+
+        if let Some(selected_user_asked) = selected_user_asked.as_deref() {
+            candidates.retain(|candidate| {
+                user_asked_key_from_request_body(candidate.request_body.as_deref()).as_deref()
+                    == Some(selected_user_asked)
+            });
+        }
+
+        candidates.sort_by(|left, right| {
+            left.distance
+                .partial_cmp(&right.distance)
+                .unwrap_or(Ordering::Equal)
+                .then_with(|| {
+                    left.started_at_seconds
+                        .partial_cmp(&right.started_at_seconds)
+                        .unwrap_or(Ordering::Equal)
+                })
+                .then_with(|| left.started_at.cmp(&right.started_at))
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        candidates.truncate(FLOW_ROW_LIMIT as usize);
+        candidates.sort_by(|left, right| {
+            left.started_at_seconds
+                .partial_cmp(&right.started_at_seconds)
+                .unwrap_or(Ordering::Equal)
+                .then_with(|| left.started_at.cmp(&right.started_at))
+                .then_with(|| left.id.cmp(&right.id))
+        });
+
+        Ok(candidates
+            .into_iter()
+            .map(|candidate| RequestLogSummary {
+                id: candidate.id,
+                started_at: candidate.started_at,
+                completed_at: candidate.completed_at,
+                client_ip: candidate.client_ip,
+                method: candidate.method,
+                path: candidate.path,
+                query: candidate.query,
+                model: candidate.model,
+                upstream_status: candidate.upstream_status,
+                latency_ms: candidate.latency_ms,
+                request_bytes: candidate.request_bytes,
+                response_bytes: candidate.response_bytes,
+                request_body_truncated: candidate.request_body_truncated,
+                response_body_truncated: candidate.response_body_truncated,
+                input_tokens: candidate.input_tokens,
+                output_tokens: candidate.output_tokens,
+                total_tokens: candidate.total_tokens,
+                cached_input_tokens: candidate.cached_input_tokens,
+                reasoning_output_tokens: candidate.reasoning_output_tokens,
+                error: candidate.error,
+            })
+            .collect())
     }
 
     #[cfg(test)]
     pub(crate) fn pool(&self) -> &SqlitePool {
         &self.pool
+    }
+
+    async fn backfill_detail_token_usage(&self, detail: &mut RequestLogDetail) -> Result<()> {
+        if detail.has_no_token_usage()
+            && let Some(response_body) = detail.response_body.as_deref()
+        {
+            let usage = token_usage_from_response_body(response_body.as_bytes());
+            if !usage.is_empty() {
+                self.update_token_usage(&detail.id, usage).await?;
+                detail.apply_token_usage(usage);
+            }
+        }
+        Ok(())
     }
 
     async fn update_token_usage(&self, id: &str, usage: TokenUsage) -> Result<()> {
@@ -604,6 +781,88 @@ pub(crate) fn model_from_body(body: &[u8]) -> Option<String> {
         .get("model")
         .and_then(Value::as_str)
         .map(ToString::to_string)
+}
+
+fn user_asked_key_from_request_body(body: Option<&str>) -> Option<String> {
+    let request = serde_json::from_str::<Value>(body?).ok()?;
+    match request.get("input")? {
+        Value::String(text) => normalize_user_asked_text(text),
+        Value::Array(items) => items.iter().rev().find_map(|item| {
+            if item.get("role").and_then(Value::as_str) != Some("user") {
+                return None;
+            }
+            input_item_text(item)
+        }),
+        _ => None,
+    }
+}
+
+fn input_item_text(item: &Value) -> Option<String> {
+    match item {
+        Value::String(text) => normalize_user_asked_text(text),
+        Value::Object(map) => [
+            map.get("content").and_then(content_text),
+            map.get("output").and_then(text_value),
+            map.get("input").and_then(text_value),
+            map.get("arguments").and_then(text_value),
+            map.get("text").and_then(text_value),
+            map.get("summary").and_then(text_value),
+        ]
+        .into_iter()
+        .flatten()
+        .next(),
+        _ => None,
+    }
+}
+
+fn content_text(value: &Value) -> Option<String> {
+    match value {
+        Value::String(text) => normalize_user_asked_text(text),
+        Value::Array(parts) => {
+            let text = parts
+                .iter()
+                .filter_map(content_part_text)
+                .collect::<Vec<_>>()
+                .join("\n");
+            normalize_user_asked_text(&text)
+        }
+        Value::Object(_) => content_part_text(value),
+        _ => None,
+    }
+}
+
+fn content_part_text(part: &Value) -> Option<String> {
+    match part {
+        Value::String(text) => normalize_user_asked_text(text),
+        Value::Object(map) => [
+            map.get("text").and_then(text_value),
+            map.get("input_text").and_then(text_value),
+            map.get("output_text").and_then(text_value),
+            map.get("content").and_then(content_text),
+            map.get("summary").and_then(text_value),
+        ]
+        .into_iter()
+        .flatten()
+        .next(),
+        _ => None,
+    }
+}
+
+fn text_value(value: &Value) -> Option<String> {
+    match value {
+        Value::String(text) => normalize_user_asked_text(text),
+        Value::Array(_) | Value::Object(_) => content_text(value),
+        _ => None,
+    }
+}
+
+fn normalize_user_asked_text(text: &str) -> Option<String> {
+    let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if normalized.is_empty() {
+        None
+    } else {
+        Some(normalized)
+    }
 }
 
 pub(crate) fn log_request_start(

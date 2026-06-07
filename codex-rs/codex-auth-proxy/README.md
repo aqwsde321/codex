@@ -130,6 +130,8 @@ requests, high token usage, and truncated log rows. The search box scans row
 metadata plus stored request/response body text. The Summary view includes a
 Growth Analysis panel for the largest request growth signals, and the Tool I/O
 tab groups tool calls and tool outputs with the largest outputs ranked first.
+The Flow tab groups nearby `/v1/responses` rows with the same User asked text
+when it is available, then shows them as ordered steps.
 
 Example query:
 

@@ -103,6 +103,11 @@ fn handle_viewer_request(runtime: &Runtime, logger: &RequestLogger, req: Request
                 respond_text(req, StatusCode(404), "Not found", "text/plain");
                 return Ok(());
             };
+            if let Some(id) = id.strip_suffix("/flow") {
+                let rows = runtime.block_on(logger.flow_around(id))?;
+                respond_json(req, &rows)?;
+                return Ok(());
+            }
             match runtime.block_on(logger.get_detail(id))? {
                 Some(detail) => respond_json(req, &detail)?,
                 None => respond_text(req, StatusCode(404), "Not found", "text/plain"),

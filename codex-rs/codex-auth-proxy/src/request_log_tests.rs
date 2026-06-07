@@ -561,6 +561,111 @@ data: {"response":{"usage":{"input_tokens":100000,"output_tokens":1,"total_token
 }
 
 #[test]
+fn request_logger_reads_flow_around_selected_row() {
+    with_logger(|runtime, logger| {
+        runtime.block_on(async {
+            insert_completed_with_meta(
+                logger,
+                "req-before",
+                "940.000",
+                Some("192.168.0.10"),
+                "/v1/responses",
+                Some("same user request"),
+            )
+            .await;
+            insert_completed_with_meta(
+                logger,
+                "req-selected",
+                "1000.000",
+                Some("192.168.0.10"),
+                "/v1/responses",
+                Some("same user request"),
+            )
+            .await;
+            insert_completed_with_meta(
+                logger,
+                "req-after",
+                "1060.000",
+                Some("192.168.0.10"),
+                "/v1/responses",
+                Some("same user request"),
+            )
+            .await;
+            insert_completed_with_meta(
+                logger,
+                "req-different-user",
+                "1001.000",
+                Some("192.168.0.10"),
+                "/v1/responses",
+                Some("different user request"),
+            )
+            .await;
+            insert_completed_with_meta(
+                logger,
+                "req-other-client",
+                "1001.000",
+                Some("192.168.0.11"),
+                "/v1/responses",
+                Some("same user request"),
+            )
+            .await;
+            insert_completed_with_meta(
+                logger,
+                "req-models",
+                "1002.000",
+                Some("192.168.0.10"),
+                "/v1/models",
+                Some("same user request"),
+            )
+            .await;
+            insert_completed_with_meta(
+                logger,
+                "req-far",
+                "2000.000",
+                Some("192.168.0.10"),
+                "/v1/responses",
+                Some("same user request"),
+            )
+            .await;
+
+            let rows = logger.flow_around("req-selected").await.expect("flow rows");
+            assert_eq!(
+                rows.into_iter().map(|row| row.id).collect::<Vec<_>>(),
+                vec![
+                    "req-before".to_string(),
+                    "req-selected".to_string(),
+                    "req-after".to_string(),
+                ]
+            );
+            assert_eq!(
+                logger.flow_around("missing").await.expect("missing flow"),
+                Vec::<RequestLogSummary>::new()
+            );
+        });
+    });
+}
+
+#[test]
+fn user_asked_key_reads_latest_user_input_text() {
+    assert_eq!(
+        user_asked_key_from_request_body(Some(
+            r#"{"input":[{"role":"user","content":[{"type":"input_text","text":"first"}]},{"role":"assistant","content":[{"type":"output_text","text":"answer"}]},{"role":"user","content":[{"type":"input_text","text":"second\n\nquestion"}]}]}"#
+        )),
+        Some("second question".to_string())
+    );
+    assert_eq!(
+        user_asked_key_from_request_body(Some(r#"{"input":"simple question"}"#)),
+        Some("simple question".to_string())
+    );
+    assert_eq!(
+        user_asked_key_from_request_body(Some(
+            r#"{"input":[{"role":"assistant","content":[{"type":"output_text","text":"answer"}]}]}"#
+        )),
+        None
+    );
+}
+
+#[test]
 fn open_with_retention_prunes_existing_completed_rows() {
     let runtime = Runtime::new().expect("runtime");
     let temp_dir = tempfile::tempdir().expect("temp dir");
@@ -705,6 +810,63 @@ async fn insert_completed_with(
         )
         .await
         .expect("complete row");
+}
+
+async fn insert_completed_with_meta(
+    logger: &RequestLogger,
+    id: &str,
+    started_at: &str,
+    client_ip: Option<&str>,
+    path: &str,
+    user_asked: Option<&str>,
+) {
+    let request_body = user_asked
+        .map(request_body_with_user)
+        .unwrap_or_else(|| "{}".to_string());
+    logger
+        .insert_start(RequestLogStart {
+            id,
+            started_at,
+            client_ip,
+            method: "POST",
+            path,
+            query: None,
+            model: Some("gpt-5.5"),
+            request_body: request_body.as_bytes(),
+        })
+        .await
+        .expect("insert row");
+    logger
+        .complete(
+            id,
+            RequestLogCompletion {
+                completed_at: "9999.001",
+                upstream_status: Some(200),
+                latency_ms: 1,
+                response_body: b"event: done\n\n",
+                error: None,
+            },
+        )
+        .await
+        .expect("complete row");
+}
+
+fn request_body_with_user(text: &str) -> String {
+    serde_json::json!({
+        "model": "gpt-5.5",
+        "input": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_text",
+                        "text": text
+                    }
+                ]
+            }
+        ]
+    })
+    .to_string()
 }
 
 async fn fetch_ids_by_started_at(logger: &RequestLogger) -> Vec<String> {
