@@ -1,11 +1,14 @@
+use std::fs;
 use std::net::IpAddr;
 use std::net::SocketAddr;
+use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Context;
 use anyhow::Result;
 use anyhow::anyhow;
+use serde::Serialize;
 use tiny_http::Header;
 use tiny_http::Method;
 use tiny_http::Request;
@@ -16,6 +19,7 @@ use tokio::runtime::Runtime;
 
 use crate::request_log::RequestLogFilter;
 use crate::request_log::RequestLogListQuery;
+use crate::request_log::RequestLogStats;
 use crate::request_log::RequestLogger;
 use crate::viewer_html;
 
@@ -30,6 +34,15 @@ pub struct ViewerArgs {
     /// Address to listen on. The viewer only accepts loopback addresses.
     #[arg(long, default_value = DEFAULT_VIEWER_LISTEN_ADDR)]
     pub listen: SocketAddr,
+}
+
+#[derive(Debug, Serialize)]
+struct ViewerStats {
+    #[serde(flatten)]
+    log: RequestLogStats,
+    db_path: String,
+    db_bytes: u64,
+    db_total_bytes: u64,
 }
 
 pub(crate) fn run_viewer(args: ViewerArgs) -> Result<()> {
@@ -58,8 +71,9 @@ pub(crate) fn run_viewer(args: ViewerArgs) -> Result<()> {
     for request in server.incoming_requests() {
         let runtime = runtime.clone();
         let logger = logger.clone();
+        let db_path = args.db.clone();
         std::thread::spawn(move || {
-            if let Err(err) = handle_viewer_request(&runtime, &logger, request) {
+            if let Err(err) = handle_viewer_request(&runtime, &logger, &db_path, request) {
                 eprintln!("viewer request error: {err:#}");
             }
         });
@@ -82,7 +96,12 @@ fn require_loopback_listener(listen: SocketAddr) -> Result<()> {
     ))
 }
 
-fn handle_viewer_request(runtime: &Runtime, logger: &RequestLogger, req: Request) -> Result<()> {
+fn handle_viewer_request(
+    runtime: &Runtime,
+    logger: &RequestLogger,
+    db_path: &Path,
+    req: Request,
+) -> Result<()> {
     if req.method() != &Method::Get {
         respond_text(req, StatusCode(405), "Method not allowed", "text/plain");
         return Ok(());
@@ -99,6 +118,10 @@ fn handle_viewer_request(runtime: &Runtime, logger: &RequestLogger, req: Request
             let query = list_query_for_url(&url);
             let rows = runtime.block_on(logger.list_recent_matching(query))?;
             respond_json(req, &rows)?;
+        }
+        "/api/stats" => {
+            let stats = viewer_stats(runtime, logger, db_path)?;
+            respond_json(req, &stats)?;
         }
         path => {
             let Some(id) = path.strip_prefix("/api/requests/") else {
@@ -118,6 +141,40 @@ fn handle_viewer_request(runtime: &Runtime, logger: &RequestLogger, req: Request
     }
 
     Ok(())
+}
+
+fn viewer_stats(runtime: &Runtime, logger: &RequestLogger, db_path: &Path) -> Result<ViewerStats> {
+    let log = runtime.block_on(logger.stats())?;
+    Ok(ViewerStats {
+        log,
+        db_path: db_path.display().to_string(),
+        db_bytes: file_len(db_path),
+        db_total_bytes: sqlite_total_bytes(db_path),
+    })
+}
+
+fn sqlite_total_bytes(db_path: &Path) -> u64 {
+    file_len(db_path) + file_len(&wal_path(db_path)) + file_len(&shm_path(db_path))
+}
+
+fn file_len(path: &Path) -> u64 {
+    fs::metadata(path)
+        .map(|metadata| metadata.len())
+        .unwrap_or(0)
+}
+
+fn wal_path(db_path: &Path) -> PathBuf {
+    suffixed_path(db_path, "-wal")
+}
+
+fn shm_path(db_path: &Path) -> PathBuf {
+    suffixed_path(db_path, "-shm")
+}
+
+fn suffixed_path(path: &Path, suffix: &str) -> PathBuf {
+    let mut value = path.as_os_str().to_os_string();
+    value.push(suffix);
+    PathBuf::from(value)
 }
 
 fn respond_json(req: Request, value: &impl serde::Serialize) -> Result<()> {

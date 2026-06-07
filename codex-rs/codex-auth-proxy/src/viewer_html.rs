@@ -83,6 +83,14 @@ const STYLE: &str = r#"
       white-space: nowrap;
     }
 
+    .db-stats {
+      max-width: 52vw;
+      overflow: hidden;
+      color: var(--muted);
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
     main {
       display: grid;
       grid-template-columns: minmax(260px, 340px) minmax(0, 1fr);
@@ -893,6 +901,7 @@ const STYLE: &str = r#"
         padding: 12px;
       }
       .detail-head { grid-template-columns: 1fr; }
+      .db-stats { display: none; }
       .body-surface { min-height: 320px; }
       .body-surface.summary-mode { overflow: auto; }
       .summary-content { min-height: auto; }
@@ -912,6 +921,7 @@ const BODY: &str = r#"
   <header>
     <h1>codex-auth-proxy</h1>
     <div class="toolbar">
+      <span id="db-stats" class="db-stats">DB loading</span>
       <span id="status" class="status">Loading</span>
       <button id="refresh" type="button">Refresh</button>
     </div>

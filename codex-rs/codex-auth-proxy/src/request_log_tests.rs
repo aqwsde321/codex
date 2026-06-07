@@ -245,6 +245,92 @@ fn request_logger_lists_recent_rows_and_reads_detail() {
 }
 
 #[test]
+fn request_logger_reads_stats() {
+    with_logger(|runtime, logger| {
+        runtime.block_on(async {
+            logger
+                .insert_start(RequestLogStart {
+                    id: "req-complete",
+                    started_at: "1000.001",
+                    client_ip: None,
+                    method: "POST",
+                    path: "/v1/responses",
+                    query: None,
+                    model: Some("gpt-5.5"),
+                    request_body: b"{}",
+                })
+                .await
+                .expect("insert complete row");
+            logger
+                .complete(
+                    "req-complete",
+                    RequestLogCompletion {
+                        completed_at: "1000.100",
+                        upstream_status: Some(200),
+                        latency_ms: 99,
+                        response_body: b"event: done\n\n",
+                        error: None,
+                    },
+                )
+                .await
+                .expect("complete row");
+            logger
+                .insert_start(RequestLogStart {
+                    id: "req-error",
+                    started_at: "2000.001",
+                    client_ip: None,
+                    method: "POST",
+                    path: "/v1/responses",
+                    query: None,
+                    model: Some("gpt-5.5"),
+                    request_body: b"{}",
+                })
+                .await
+                .expect("insert error row");
+            logger
+                .complete(
+                    "req-error",
+                    RequestLogCompletion {
+                        completed_at: "2000.100",
+                        upstream_status: Some(500),
+                        latency_ms: 10,
+                        response_body: b"error",
+                        error: Some("upstream failed"),
+                    },
+                )
+                .await
+                .expect("complete error row");
+            logger
+                .insert_start(RequestLogStart {
+                    id: "req-open",
+                    started_at: "3000.001",
+                    client_ip: None,
+                    method: "POST",
+                    path: "/v1/responses",
+                    query: None,
+                    model: Some("gpt-5.5"),
+                    request_body: b"{}",
+                })
+                .await
+                .expect("insert open row");
+
+            assert_eq!(
+                logger.stats().await.expect("stats"),
+                RequestLogStats {
+                    total_rows: 3,
+                    completed_rows: 2,
+                    in_progress_rows: 1,
+                    error_rows: 1,
+                    truncated_rows: 0,
+                    last_started_at: Some("3000.001".to_string()),
+                    last_completed_at: Some("2000.100".to_string()),
+                }
+            );
+        });
+    });
+}
+
+#[test]
 fn request_logger_schema_does_not_persist_authorization_headers() {
     with_logger(|runtime, logger| {
         runtime.block_on(async {

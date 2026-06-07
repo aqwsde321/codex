@@ -80,9 +80,9 @@ codex -p local-proxy \
 http://127.0.0.1:8788
 ```
 
-뷰어에서는 검색, 필터, summary, flow 표시, tool I/O, raw request/response를
-확인할 수 있습니다. viewer는 민감한 로그를 보여주므로 loopback 주소에서만
-실행됩니다.
+뷰어에서는 DB 크기와 row 통계, 검색, 필터, summary, flow 표시, tool I/O,
+raw request/response를 확인할 수 있습니다. viewer는 민감한 로그를
+보여주므로 loopback 주소에서만 실행됩니다.
 
 ## 보안 주의
 

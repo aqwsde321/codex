@@ -176,6 +176,17 @@ pub(crate) struct RequestLogDetail {
     pub(crate) error: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, sqlx::FromRow)]
+pub(crate) struct RequestLogStats {
+    pub(crate) total_rows: i64,
+    pub(crate) completed_rows: i64,
+    pub(crate) in_progress_rows: i64,
+    pub(crate) error_rows: i64,
+    pub(crate) truncated_rows: i64,
+    pub(crate) last_started_at: Option<String>,
+    pub(crate) last_completed_at: Option<String>,
+}
+
 #[derive(Debug, Clone, sqlx::FromRow)]
 struct RequestLogFlowSeed {
     started_at: String,
@@ -642,6 +653,25 @@ LIMIT ?
             .collect();
 
         Ok(RequestLogFlow { basis, rows })
+    }
+
+    pub(crate) async fn stats(&self) -> Result<RequestLogStats> {
+        sqlx::query_as::<_, RequestLogStats>(
+            r#"
+SELECT
+  COUNT(*) AS total_rows,
+  COUNT(completed_at) AS completed_rows,
+  COALESCE(SUM(CASE WHEN completed_at IS NULL THEN 1 ELSE 0 END), 0) AS in_progress_rows,
+  COALESCE(SUM(CASE WHEN upstream_status >= 400 OR error IS NOT NULL THEN 1 ELSE 0 END), 0) AS error_rows,
+  COALESCE(SUM(CASE WHEN request_body_truncated != 0 OR response_body_truncated != 0 THEN 1 ELSE 0 END), 0) AS truncated_rows,
+  MAX(started_at) AS last_started_at,
+  MAX(completed_at) AS last_completed_at
+FROM proxy_requests
+"#,
+        )
+        .fetch_one(&self.pool)
+        .await
+        .context("reading proxy request log stats")
     }
 
     #[cfg(test)]

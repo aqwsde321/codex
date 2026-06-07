@@ -6,6 +6,7 @@ pub(crate) const JS: &str = r#"
 
     const state = {
       requests: [],
+      stats: null,
       selected: null,
       detail: null,
       derived: null,
@@ -23,6 +24,7 @@ pub(crate) const JS: &str = r#"
     const listEl = document.getElementById("list");
     const searchEl = document.getElementById("search");
     const statusEl = document.getElementById("status");
+    const dbStatsEl = document.getElementById("db-stats");
     const detailTitleEl = document.getElementById("detail-title");
     const detailMetaEl = document.getElementById("detail-meta");
     const detailStatusEl = document.getElementById("detail-status");
@@ -51,9 +53,15 @@ pub(crate) const JS: &str = r#"
 
     async function loadRequests() {
       statusEl.textContent = "Loading";
-      const requests = await fetchJson(requestsUrl());
+      dbStatsEl.textContent = "DB loading";
+      const [requests, stats] = await Promise.all([
+        fetchJson(requestsUrl()),
+        fetchJson("/api/stats"),
+      ]);
       state.requests = requests;
+      state.stats = stats;
       renderList();
+      renderDbStats();
       statusEl.textContent = `${requests.length} ${hasActiveListFilter() ? "matches" : "rows"}`;
       if (requests.length === 0) {
         state.selected = null;
@@ -174,6 +182,33 @@ pub(crate) const JS: &str = r#"
 
     function hasActiveListFilter() {
       return state.filter !== "all" || state.search.trim().length > 0;
+    }
+
+    function renderDbStats() {
+      const stats = state.stats;
+      if (!stats) {
+        dbStatsEl.textContent = "DB -";
+        return;
+      }
+      dbStatsEl.textContent = [
+        `DB ${formatBytes(stats.db_total_bytes)}`,
+        `${formatCount(stats.total_rows)} total`,
+        `${formatCount(stats.completed_rows)} done`,
+        `${formatCount(stats.in_progress_rows)} open`,
+        `last ${formatTimestamp(stats.last_started_at)}`,
+      ].join(" · ");
+      dbStatsEl.title = [
+        `DB path: ${stats.db_path}`,
+        `SQLite file: ${formatBytes(stats.db_bytes)}`,
+        `SQLite + WAL/SHM: ${formatBytes(stats.db_total_bytes)}`,
+        `Rows: ${formatCount(stats.total_rows)}`,
+        `Completed: ${formatCount(stats.completed_rows)}`,
+        `In progress: ${formatCount(stats.in_progress_rows)}`,
+        `Errors: ${formatCount(stats.error_rows)}`,
+        `Truncated: ${formatCount(stats.truncated_rows)}`,
+        `Last started: ${formatTimestamp(stats.last_started_at)}`,
+        `Last completed: ${formatTimestamp(stats.last_completed_at)}`,
+      ].join("\n");
     }
 
     function rowMeta(request) {
