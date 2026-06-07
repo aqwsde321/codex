@@ -183,11 +183,11 @@ request/response body 텍스트를 검색합니다. 빠른 필터로 에러, 느
 Summary의 Growth Analysis는 요청이 커진 주요 원인을 표시하고, Tool I/O
 탭은 tool call과 tool output만 모아서 큰 output 순서로 보여줍니다.
 왼쪽 요청 목록은 하나의 시간순 목록으로 유지됩니다. 선택한 row의 flow에
-포함된 row에는 목록 안에서 step 번호와 옅은 묶음 테두리가 표시됩니다. Flow
-탭은 같은 묶음을 더 자세히 보여줍니다. Flow는 response의 tool call `call_id`와
-다음 request의 tool output `call_id`가 이어지면 그 체인을 우선으로 묶습니다.
-체인을 찾지 못하면 같은 User asked 텍스트 기준으로 주변 `/v1/responses` row를
-묶습니다.
+포함된 row에는 목록 안에서 `step/total` 번호와 옅은 묶음 테두리가 표시됩니다.
+Flow는 response의 tool call `call_id`와 다음 request의 tool output `call_id`가
+이어지면 그 체인을 우선으로 묶습니다. 체인을 찾지 못하면 같은 User asked 텍스트
+기준으로 주변 `/v1/responses` row를 묶습니다. 원본 request/response 확인용 탭은
+남아 있지만 기본 분석 탭보다 작고 흐리게 표시됩니다.
 
 viewer는 민감한 요청/응답 내용을 보여주므로 loopback 주소에서만
 실행됩니다. `0.0.0.0` 같은 외부 접속 주소로는 실행할 수 없습니다.

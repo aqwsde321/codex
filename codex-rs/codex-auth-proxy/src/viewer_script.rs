@@ -102,12 +102,15 @@ pub(crate) const JS: &str = r#"
         return;
       }
 
-      const flowStepById = new Map(currentFlowRows().map((row, index) => [row.id, index + 1]));
+      const flowRows = currentFlowRows();
+      const flowStepById = flowRows.length > 1
+        ? new Map(flowRows.map((row, index) => [row.id, { index: index + 1, total: flowRows.length }]))
+        : new Map();
       state.requests.forEach((request, index) => {
-        const flowIndex = flowStepById.get(request.id) || null;
+        const flowStep = flowStepById.get(request.id) || null;
         const previousInFlow = index > 0 && flowStepById.has(state.requests[index - 1].id);
         const nextInFlow = index + 1 < state.requests.length && flowStepById.has(state.requests[index + 1].id);
-        listEl.appendChild(requestRow(request, flowIndex, { previousInFlow, nextInFlow }));
+        listEl.appendChild(requestRow(request, flowStep, { previousInFlow, nextInFlow }));
       });
     }
 
@@ -116,12 +119,12 @@ pub(crate) const JS: &str = r#"
       return state.flow.rows || [];
     }
 
-    function requestRow(request, flowIndex, flowGroup) {
+    function requestRow(request, flowStep, flowGroup) {
       const row = document.createElement("button");
       row.type = "button";
       row.className = "row";
-      row.classList.toggle("flow-step-row", flowIndex != null);
-      if (flowIndex != null) {
+      row.classList.toggle("flow-step-row", flowStep != null);
+      if (flowStep != null) {
         row.classList.toggle("flow-run-start", !flowGroup.previousInFlow);
         row.classList.toggle("flow-run-end", !flowGroup.nextInFlow);
       }
@@ -130,10 +133,10 @@ pub(crate) const JS: &str = r#"
 
       const title = document.createElement("div");
       title.className = "row-title";
-      if (flowIndex != null) {
+      if (flowStep != null) {
         const step = document.createElement("span");
         step.className = "flow-step-badge";
-        step.textContent = flowIndex;
+        step.textContent = `${flowStep.index}/${flowStep.total}`;
         title.appendChild(step);
       }
       const titleText = document.createElement("span");
@@ -195,8 +198,6 @@ pub(crate) const JS: &str = r#"
 
       if (state.view === "summary") {
         renderSummary(detail, derived);
-      } else if (state.view === "flow") {
-        renderFlow(detail);
       } else if (state.view === "messages") {
         renderRequestMessages(derived.requestInfo);
       } else if (state.view === "tools") {
@@ -553,44 +554,6 @@ pub(crate) const JS: &str = r#"
       bodyEl.appendChild(content);
     }
 
-    function renderFlow(detail) {
-      ensureFlowLoaded(detail.id);
-
-      if (state.flowError) {
-        bodyEl.append(textBlock(state.flowError.stack || String(state.flowError)));
-        return;
-      }
-      if (!state.flow) {
-        bodyEl.append(notice("Loading request flow."));
-        return;
-      }
-      const rows = state.flow.rows || [];
-      if (rows.length === 0) {
-        bodyEl.append(textBlock("No response requests for this flow."));
-        return;
-      }
-
-      const selectedIndex = rows.findIndex((row) => row.id === detail.id);
-      bodyEl.append(notice(`${flowBasisText(state.flow.basis)} ${rows.length} steps, selected row is step ${selectedIndex >= 0 ? selectedIndex + 1 : "-"}.`));
-      const list = document.createElement("div");
-      list.className = "flow-list";
-      rows.forEach((row, index) => list.appendChild(flowStep(row, index)));
-      bodyEl.appendChild(list);
-    }
-
-    function flowBasisText(basis) {
-      if (basis === "tool_call_chain") {
-        return "Grouped by tool call chain, using response call_id to request tool output call_id links.";
-      }
-      if (basis === "user_asked") {
-        return "Grouped by the same User asked text within nearby /v1/responses rows.";
-      }
-      if (basis === "nearby") {
-        return "Grouped by nearby /v1/responses rows because no stronger flow key was found.";
-      }
-      return "No flow grouping key was available.";
-    }
-
     async function loadFlow(id) {
       state.flowLoading = true;
       try {
@@ -605,7 +568,6 @@ pub(crate) const JS: &str = r#"
         if (state.selected === id) state.flowLoading = false;
       }
       if (state.selected === id) renderList();
-      if (state.selected === id && state.view === "flow") renderDetail();
     }
 
     function ensureFlowLoaded(id) {
@@ -617,81 +579,6 @@ pub(crate) const JS: &str = r#"
       }
       if (state.flow || state.flowError || state.flowLoading) return;
       loadFlow(id);
-    }
-
-    function flowStep(row, index) {
-      const isSelected = row.id === state.selected;
-      const derived = isSelected ? state.derived : null;
-      const request = derived?.requestInfo;
-      const toolCalls = request?.toolCalls || [];
-      const card = document.createElement("div");
-      card.className = "flow-step";
-      card.classList.toggle("active", isSelected);
-
-      const head = document.createElement("div");
-      head.className = "flow-step-head";
-      const titleBlock = document.createElement("div");
-      const title = document.createElement("h3");
-      title.className = "flow-step-title";
-      title.textContent = `Step ${index + 1}${isSelected ? " · selected" : ""}`;
-      const sub = document.createElement("div");
-      sub.className = "flow-step-sub";
-      sub.textContent = `${formatTimestamp(row.started_at)} · ${row.model || "-"} · ${row.id}`;
-      titleBlock.append(title, sub);
-
-      const open = document.createElement("button");
-      open.type = "button";
-      open.textContent = "Open";
-      open.addEventListener("click", () => selectRequest(row.id));
-      head.append(titleBlock, open);
-
-      card.append(
-        head,
-        metrics([
-          ["Status", row.upstream_status || "-"],
-          ["Duration", formatDurationMs(row.latency_ms)],
-          ["Total tokens", formatCount(row.total_tokens)],
-          ["Tool calls", derived ? toolCalls.length : "-"],
-          ["Tool outputs", derived ? request.toolOutputCount || 0 : "-"],
-          ["Tool output chars", derived ? formatChars(request.toolOutputChars || 0) : "-"],
-        ]),
-        chipsBlock("Actions", derived ? flowActionNames(derived) : []),
-        flowStepBody(row, derived)
-      );
-      return card;
-    }
-
-    function flowActionNames(derived) {
-      const names = importantActions(derived).map((action) => action.name).filter(Boolean);
-      if (names.length > 0) return names;
-      return (derived.requestInfo.toolCalls || []).map((call) => call.name).filter(Boolean);
-    }
-
-    function flowStepBody(row, derived) {
-      const body = document.createElement("div");
-      body.className = "flow-step-body";
-      if (!derived) {
-        body.append(flowSnippet("Step detail", "Open this step to inspect request messages, tool I/O, and response text."));
-        return body;
-      }
-      body.append(
-        flowSnippet("Request", derived.requestInfo.latestUserText || derived.requestInfo.latestText || "(empty)"),
-        flowSnippet("Assistant", responseTextForSummary(row, derived)),
-        flowSnippet("Largest tool output", derived.requestInfo.toolOutputs?.[0]?.text || "(empty)")
-      );
-      return body;
-    }
-
-    function flowSnippet(title, value) {
-      const item = document.createElement("div");
-      const label = document.createElement("div");
-      label.className = "flow-snippet-title";
-      label.textContent = title;
-      const block = document.createElement("pre");
-      block.className = "flow-snippet";
-      block.textContent = preview(value, 900);
-      item.append(label, block);
-      return item;
     }
 
     function growthAnalysis(detail, derived) {

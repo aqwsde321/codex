@@ -144,8 +144,9 @@ const STYLE: &str = r#"
 
     .flow-step-badge {
       flex: 0 0 auto;
-      width: 20px;
+      min-width: 30px;
       height: 20px;
+      padding: 0 6px;
       display: inline-flex;
       align-items: center;
       justify-content: center;
@@ -277,6 +278,16 @@ const STYLE: &str = r#"
       margin-bottom: 10px;
       flex-wrap: wrap;
       flex: 0 0 auto;
+    }
+
+    .tab.secondary {
+      height: 28px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .tab.secondary.active {
+      color: var(--accent);
     }
 
     .body-surface {
@@ -486,76 +497,6 @@ const STYLE: &str = r#"
       margin: 6px 0 0;
       border-left: 0;
       padding-left: 0;
-    }
-
-    .flow-list {
-      display: flex;
-      flex-direction: column;
-      gap: 10px;
-      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-    }
-
-    .flow-step {
-      min-width: 0;
-      padding: 12px;
-      border: 1px solid var(--line);
-      border-radius: 6px;
-      background: #fff;
-    }
-
-    .flow-step.active {
-      border-color: var(--accent);
-      background: #eef7f5;
-    }
-
-    .flow-step-head {
-      display: grid;
-      grid-template-columns: minmax(0, 1fr) auto;
-      gap: 8px;
-      align-items: start;
-      margin-bottom: 10px;
-    }
-
-    .flow-step-title {
-      margin: 0;
-      font-size: 13px;
-      font-weight: 700;
-      overflow-wrap: anywhere;
-    }
-
-    .flow-step-sub {
-      margin-top: 3px;
-      color: var(--muted);
-      font-size: 12px;
-    }
-
-    .flow-step-body {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-      gap: 10px;
-    }
-
-    .flow-snippet-title {
-      margin-bottom: 4px;
-      color: var(--muted);
-      font-size: 11px;
-      font-weight: 700;
-      text-transform: uppercase;
-    }
-
-    .flow-snippet {
-      max-height: 110px;
-      margin: 0;
-      overflow-x: hidden;
-      overflow-y: auto;
-      padding: 8px;
-      border-radius: 6px;
-      background: var(--code-bg);
-      color: var(--code);
-      white-space: pre-wrap;
-      overflow-wrap: anywhere;
-      word-break: break-word;
-      font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
     }
 
     .empty-text {
@@ -868,13 +809,12 @@ const BODY: &str = r#"
       </div>
       <div class="tabs">
         <button class="tab active" type="button" data-view="summary">Summary</button>
-        <button class="tab" type="button" data-view="flow">Flow</button>
         <button class="tab" type="button" data-view="messages">Request Messages</button>
         <button class="tab" type="button" data-view="tools">Tool I/O</button>
-        <button class="tab" type="button" data-view="request">Request Tree</button>
+        <button class="tab secondary" type="button" data-view="request">Request Tree</button>
         <button class="tab" type="button" data-view="text">Response Text</button>
-        <button class="tab" type="button" data-view="events">Response Events</button>
-        <button class="tab" type="button" data-view="raw">Raw SSE</button>
+        <button class="tab secondary" type="button" data-view="events">Response Events</button>
+        <button class="tab secondary" type="button" data-view="raw">Raw SSE</button>
         <button class="tab" type="button" data-view="error">Error</button>
       </div>
       <div id="body" class="body-surface"></div>
