@@ -55,8 +55,7 @@ client_base_url: http://<프록시_IP>:8787/v1
 export CODEX_PROXY_TOKEN='긴_랜덤_토큰'
 export CODEX_AUTH_PROXY_BASE_URL='서버_로그의_client_base_url'
 
-codex -p local-proxy \
-  -c "model_providers.local-auth-proxy.base_url=\"$CODEX_AUTH_PROXY_BASE_URL\""
+codex -p local-proxy -c "model_providers.local-auth-proxy.base_url='${CODEX_AUTH_PROXY_BASE_URL}'"
 ```
 
 외부 컴퓨터의 파일 작업, shell 실행, 테스트 실행은 외부 컴퓨터에서 직접

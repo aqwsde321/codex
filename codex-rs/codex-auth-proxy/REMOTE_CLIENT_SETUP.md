@@ -78,8 +78,7 @@ EOF
 export CODEX_PROXY_TOKEN=test
 export CODEX_AUTH_PROXY_BASE_URL='http://<프록시_IP>:8787/v1'
 
-codex -p local-proxy \
-  -c "model_providers.local-auth-proxy.base_url=\"$CODEX_AUTH_PROXY_BASE_URL\""
+codex -p local-proxy -c "model_providers.local-auth-proxy.base_url='${CODEX_AUTH_PROXY_BASE_URL}'"
 ```
 
 ## IP가 바뀌었을 때
@@ -91,8 +90,7 @@ config 파일을 다시 수정하지 말고, 실행 명령의 IP만 새 IP로 �
 export CODEX_PROXY_TOKEN=test
 export CODEX_AUTH_PROXY_BASE_URL='새_client_base_url'
 
-codex -p local-proxy \
-  -c "model_providers.local-auth-proxy.base_url=\"$CODEX_AUTH_PROXY_BASE_URL\""
+codex -p local-proxy -c "model_providers.local-auth-proxy.base_url='${CODEX_AUTH_PROXY_BASE_URL}'"
 ```
 
 ## 헬스체크
