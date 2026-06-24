@@ -20,6 +20,7 @@ use clap::Parser;
 use clap::Subcommand;
 use clap::ValueEnum;
 use codex_config::types::AuthCredentialsStoreMode;
+use codex_login::AuthKeyringBackendKind;
 use codex_login::AuthManager;
 use codex_model_provider::auth_provider_from_auth;
 use codex_model_provider_info::CHATGPT_CODEX_BASE_URL;
@@ -279,7 +280,10 @@ pub fn run_main(args: Args) -> Result<()> {
         codex_home,
         /*enable_codex_api_key_env*/ false,
         args.auth_store.into(),
+        /*forced_chatgpt_workspace_id*/ None,
         args.chatgpt_base_url.clone(),
+        AuthKeyringBackendKind::default(),
+        /*auth_route_config*/ None,
     ));
 
     let config = Arc::new(ForwardConfig {
