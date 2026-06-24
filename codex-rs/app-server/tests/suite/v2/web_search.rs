@@ -41,7 +41,7 @@ const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(60);
 const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[tokio::test]
-async fn standalone_web_search_round_trips_encrypted_output() -> Result<()> {
+async fn standalone_web_search_round_trips_output() -> Result<()> {
     let call_id = "web-run-1";
     let server = responses::start_mock_server().await;
     mount_search_response(&server).await;
@@ -156,8 +156,10 @@ async fn standalone_web_search_round_trips_encrypted_output() -> Result<()> {
         search_body["input"]
             .as_array()
             .context("search input should be an array")?
-            .last(),
-        Some(&json!({
+            .last()
+            .cloned()
+            .map(responses::strip_metadata_from_json),
+        Some(json!({
             "type": "message",
             "role": "user",
             "content": [{"type": "input_text", "text": "Search the web"}],
@@ -165,13 +167,13 @@ async fn standalone_web_search_round_trips_encrypted_output() -> Result<()> {
     );
 
     assert_eq!(
-        requests[1].function_call_output(call_id),
+        responses::strip_metadata_from_json(requests[1].function_call_output(call_id)),
         json!({
             "type": "function_call_output",
             "call_id": call_id,
             "output": [{
-                "type": "encrypted_content",
-                "encrypted_content": "ciphertext",
+                "type": "input_text",
+                "text": "Search result",
             }],
         })
     );
@@ -259,6 +261,7 @@ async fn mount_search_response(server: &MockServer) {
         .and(path("/api/codex/alpha/search"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "encrypted_output": "ciphertext",
+            "output": "Search result",
         })))
         .expect(1)
         .mount(server)

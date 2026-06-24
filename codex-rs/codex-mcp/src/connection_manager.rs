@@ -7,6 +7,7 @@
 //! `codex-core`.
 
 use std::collections::HashMap;
+use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -16,7 +17,7 @@ use std::time::Instant;
 use crate::McpAuthStatusEntry;
 use crate::codex_apps::CodexAppsToolsCacheContext;
 use crate::codex_apps::CodexAppsToolsCacheKey;
-use crate::codex_apps::write_cached_codex_apps_tools_if_needed;
+use crate::codex_apps::write_codex_apps_tools_cache;
 use crate::elicitation::ElicitationRequestManager;
 use crate::elicitation::ElicitationReviewerHandle;
 use crate::mcp::CODEX_APPS_MCP_SERVER_NAME;
@@ -40,8 +41,10 @@ use anyhow::Context;
 use anyhow::Result;
 use anyhow::anyhow;
 use async_channel::Sender;
+use codex_api::SharedAuthProvider;
 use codex_config::Constrained;
 use codex_config::McpServerTransportConfig;
+use codex_config::types::AuthKeyringBackendKind;
 use codex_config::types::OAuthCredentialsStoreMode;
 use codex_login::CodexAuth;
 use codex_protocol::mcp::CallToolResult;
@@ -68,6 +71,7 @@ use serde_json::Value as JsonValue;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
+use tracing::info_span;
 use tracing::instrument;
 use tracing::trace;
 use tracing::trace_span;
@@ -105,130 +109,41 @@ pub fn tool_is_model_visible(tool: &ToolInfo) -> bool {
 pub struct McpConnectionManager {
     clients: HashMap<String, AsyncManagedClient>,
     server_metadata: HashMap<String, McpServerMetadata>,
+    required_servers: Vec<String>,
     tool_plugin_provenance: Arc<ToolPluginProvenance>,
-    host_owned_codex_apps_enabled: bool,
     prefix_mcp_tool_names: bool,
     elicitation_requests: ElicitationRequestManager,
     startup_cancellation_token: CancellationToken,
 }
 
 impl McpConnectionManager {
-    pub fn new_uninitialized(
-        approval_policy: &Constrained<AskForApproval>,
-        permission_profile: &Constrained<PermissionProfile>,
-        prefix_mcp_tool_names: bool,
-    ) -> Self {
-        Self::new_uninitialized_with_permission_profile(
-            approval_policy,
-            permission_profile.get(),
-            prefix_mcp_tool_names,
-        )
-    }
-
-    pub fn new_uninitialized_with_permission_profile(
-        approval_policy: &Constrained<AskForApproval>,
-        permission_profile: &PermissionProfile,
-        prefix_mcp_tool_names: bool,
-    ) -> Self {
-        Self {
-            clients: HashMap::new(),
-            server_metadata: HashMap::new(),
-            tool_plugin_provenance: Arc::new(ToolPluginProvenance::default()),
-            host_owned_codex_apps_enabled: false,
-            prefix_mcp_tool_names,
-            elicitation_requests: ElicitationRequestManager::new(
-                approval_policy.value(),
-                permission_profile.clone(),
-                /*reviewer*/ None,
-            ),
-            startup_cancellation_token: CancellationToken::new(),
-        }
-    }
-
-    pub fn has_servers(&self) -> bool {
-        !self.clients.is_empty()
-    }
-
-    /// Drain all MCP clients from this manager and return a future that stops
-    /// them and terminates their stdio server processes.
-    pub fn begin_shutdown(&mut self) -> impl std::future::Future<Output = ()> + Send + 'static {
-        self.startup_cancellation_token.cancel();
-        let clients = std::mem::take(&mut self.clients);
-        self.server_metadata.clear();
-        async move {
-            for client in clients.into_values() {
-                client.shutdown().await;
-            }
-        }
-    }
-
-    /// Stop all MCP clients owned by this manager and terminate stdio server processes.
-    pub async fn shutdown(&mut self) {
-        self.begin_shutdown().await;
-    }
-
-    pub fn server_origin(&self, server_name: &str) -> Option<&str> {
-        self.server_metadata
-            .get(server_name)
-            .and_then(|metadata| metadata.origin.as_ref())
-            .map(super::server::McpServerOrigin::as_str)
-    }
-
-    pub fn server_pollutes_memory(&self, server_name: &str) -> bool {
-        self.server_metadata
-            .get(server_name)
-            .is_none_or(|metadata| metadata.pollutes_memory)
-    }
-
-    pub fn plugin_id_for_mcp_server_name(&self, server_name: &str) -> Option<&str> {
-        self.tool_plugin_provenance
-            .plugin_id_for_mcp_server_name(server_name)
-    }
-
-    pub fn is_host_owned_codex_apps_server(&self, server_name: &str) -> bool {
-        self.host_owned_codex_apps_enabled && server_name == CODEX_APPS_MCP_SERVER_NAME
-    }
-
-    pub fn set_approval_policy(&self, approval_policy: &Constrained<AskForApproval>) {
-        if let Ok(mut policy) = self.elicitation_requests.approval_policy.lock() {
-            *policy = approval_policy.value();
-        }
-    }
-
-    pub fn set_permission_profile(&self, permission_profile: PermissionProfile) {
-        if let Ok(mut profile) = self.elicitation_requests.permission_profile.lock() {
-            *profile = permission_profile;
-        }
-    }
-
-    pub fn elicitations_auto_deny(&self) -> bool {
-        self.elicitation_requests.auto_deny()
-    }
-
-    pub fn set_elicitations_auto_deny(&self, auto_deny: bool) {
-        self.elicitation_requests.set_auto_deny(auto_deny);
-    }
-
-    #[allow(clippy::new_ret_no_self, clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     pub async fn new(
         mcp_servers: &HashMap<String, EffectiveMcpServer>,
         store_mode: OAuthCredentialsStoreMode,
+        keyring_backend_kind: AuthKeyringBackendKind,
         auth_entries: HashMap<String, McpAuthStatusEntry>,
         approval_policy: &Constrained<AskForApproval>,
         submit_id: String,
         tx_event: Sender<Event>,
+        startup_cancellation_token: CancellationToken,
         initial_permission_profile: PermissionProfile,
         runtime_context: McpRuntimeContext,
         codex_home: PathBuf,
         codex_apps_tools_cache_key: CodexAppsToolsCacheKey,
-        host_owned_codex_apps_enabled: bool,
         prefix_mcp_tool_names: bool,
         client_elicitation_capability: ElicitationCapability,
+        supports_openai_form_elicitation: bool,
         tool_plugin_provenance: ToolPluginProvenance,
         auth: Option<&CodexAuth>,
         elicitation_reviewer: Option<ElicitationReviewerHandle>,
-    ) -> (Self, CancellationToken) {
-        let cancel_token = CancellationToken::new();
+    ) -> Self {
+        let mut required_servers = mcp_servers
+            .iter()
+            .filter(|(_, server)| server.enabled() && server.required())
+            .map(|(name, _)| name.clone())
+            .collect::<Vec<_>>();
+        required_servers.sort();
         let mut clients = HashMap::new();
         let mut server_metadata = HashMap::new();
         let mut join_set = JoinSet::new();
@@ -248,7 +163,7 @@ impl McpConnectionManager {
             .filter(|(_, server)| server.enabled())
         {
             server_metadata.insert(server_name.clone(), McpServerMetadata::from(&server));
-            let cancel_token = cancel_token.child_token();
+            let cancel_token = startup_cancellation_token.child_token();
             let _ = emit_update(
                 startup_submit_id.as_str(),
                 &tx_event,
@@ -258,34 +173,22 @@ impl McpConnectionManager {
                 },
             )
             .await;
-            let codex_apps_tools_cache_context = if server_name == CODEX_APPS_MCP_SERVER_NAME {
-                Some(CodexAppsToolsCacheContext {
-                    codex_home: codex_home.clone(),
-                    user_key: codex_apps_tools_cache_key.clone(),
-                })
-            } else {
-                None
-            };
-            let uses_env_bearer_token =
-                server
-                    .configured_config()
-                    .is_some_and(|config| match &config.transport {
-                        McpServerTransportConfig::StreamableHttp {
-                            bearer_token_env_var,
-                            ..
-                        } => bearer_token_env_var.is_some(),
-                        McpServerTransportConfig::Stdio { .. } => false,
-                    });
-            let runtime_auth_provider =
-                if server_name == CODEX_APPS_MCP_SERVER_NAME && !uses_env_bearer_token {
-                    codex_apps_auth_provider.clone()
+            let (codex_apps_tools_cache_context, runtime_auth_provider) =
+                if server_name == CODEX_APPS_MCP_SERVER_NAME {
+                    codex_apps_cache_context_and_auth_provider(
+                        &server,
+                        &codex_home,
+                        &codex_apps_tools_cache_key,
+                        codex_apps_auth_provider.clone(),
+                    )
                 } else {
-                    None
+                    regular_mcp_cache_context_and_auth_provider()
                 };
             let async_managed_client = AsyncManagedClient::new(
                 server_name.clone(),
                 server,
                 store_mode,
+                keyring_backend_kind,
                 cancel_token.clone(),
                 tx_event.clone(),
                 elicitation_requests.clone(),
@@ -294,6 +197,7 @@ impl McpConnectionManager {
                 runtime_context.clone(),
                 runtime_auth_provider,
                 client_elicitation_capability.clone(),
+                supports_openai_form_elicitation,
             );
             clients.insert(server_name.clone(), async_managed_client.clone());
             let tx_event = tx_event.clone();
@@ -333,11 +237,11 @@ impl McpConnectionManager {
         let manager = Self {
             clients,
             server_metadata,
+            required_servers,
             tool_plugin_provenance,
-            host_owned_codex_apps_enabled,
             prefix_mcp_tool_names,
             elicitation_requests: elicitation_requests.clone(),
-            startup_cancellation_token: cancel_token.clone(),
+            startup_cancellation_token: startup_cancellation_token.clone(),
         };
         tokio::spawn(async move {
             let outcomes = join_set.join_all().await;
@@ -361,7 +265,160 @@ impl McpConnectionManager {
                 })
                 .await;
         });
-        (manager, cancel_token)
+        manager
+    }
+
+    /// Waits for every required server and reports their startup failures together.
+    ///
+    /// Callers must make the manager reachable to request handlers before awaiting this method,
+    /// because server initialization may require client elicitation.
+    pub async fn validate_required_servers(&self) -> Result<()> {
+        let failures = async {
+            let mut failures = Vec::new();
+            for server_name in &self.required_servers {
+                let Some(async_managed_client) = self.clients.get(server_name).cloned() else {
+                    failures.push(McpStartupFailure {
+                        server: server_name.clone(),
+                        error: format!("required MCP server `{server_name}` was not initialized"),
+                    });
+                    continue;
+                };
+
+                match async_managed_client.client().await {
+                    Ok(_) => {}
+                    Err(error) => failures.push(McpStartupFailure {
+                        server: server_name.clone(),
+                        error: startup_outcome_error_message(error),
+                    }),
+                }
+            }
+            failures
+        }
+        .instrument(info_span!(
+            "session_init.required_mcp_wait",
+            otel.name = "session_init.required_mcp_wait",
+            session_init.required_mcp_server_count = self.required_servers.len(),
+        ))
+        .await;
+        if failures.is_empty() {
+            return Ok(());
+        }
+
+        let details = failures
+            .iter()
+            .map(|failure| format!("{}: {}", failure.server, failure.error))
+            .collect::<Vec<_>>()
+            .join("; ");
+        Err(anyhow!(
+            "required MCP servers failed to initialize: {details}"
+        ))
+    }
+
+    pub fn new_uninitialized_with_permission_profile(
+        approval_policy: &Constrained<AskForApproval>,
+        permission_profile: &PermissionProfile,
+        prefix_mcp_tool_names: bool,
+    ) -> Self {
+        Self {
+            clients: HashMap::new(),
+            server_metadata: HashMap::new(),
+            required_servers: Vec::new(),
+            tool_plugin_provenance: Arc::new(ToolPluginProvenance::default()),
+            prefix_mcp_tool_names,
+            elicitation_requests: ElicitationRequestManager::new(
+                approval_policy.value(),
+                permission_profile.clone(),
+                /*reviewer*/ None,
+            ),
+            startup_cancellation_token: CancellationToken::new(),
+        }
+    }
+
+    pub fn has_servers(&self) -> bool {
+        !self.clients.is_empty()
+    }
+
+    pub(crate) fn contains_server(&self, server_name: &str) -> bool {
+        self.clients.contains_key(server_name)
+    }
+
+    /// Stop all MCP clients owned by this manager and terminate stdio server processes.
+    pub async fn shutdown(&self) {
+        self.startup_cancellation_token.cancel();
+        let clients = self.clients.values().cloned().collect::<Vec<_>>();
+        // Keep cleanup alive if an interrupt cancels the refresh that requested it.
+        let shutdown_task = tokio::spawn(async move {
+            for client in clients {
+                client.shutdown().await;
+            }
+        });
+        if let Err(error) = shutdown_task.await {
+            warn!("MCP client shutdown task failed: {error}");
+        }
+    }
+
+    pub fn server_origin(&self, server_name: &str) -> Option<&str> {
+        self.server_metadata
+            .get(server_name)
+            .and_then(|metadata| metadata.origin.as_ref())
+            .map(super::server::McpServerOrigin::as_str)
+    }
+
+    pub fn server_environment_id(&self, server_name: &str) -> Option<&str> {
+        self.server_metadata
+            .get(server_name)
+            .map(|metadata| metadata.environment_id.as_str())
+    }
+
+    pub fn server_pollutes_memory(&self, server_name: &str) -> bool {
+        self.server_metadata
+            .get(server_name)
+            .is_none_or(|metadata| metadata.pollutes_memory)
+    }
+
+    pub fn plugin_id_for_mcp_server_name(&self, server_name: &str) -> Option<&str> {
+        self.tool_plugin_provenance
+            .plugin_id_for_mcp_server_name(server_name)
+    }
+
+    pub fn is_selected_plugin_mcp_server(&self, server_name: &str) -> bool {
+        self.tool_plugin_provenance
+            .is_selected_plugin_mcp_server(server_name)
+    }
+
+    pub fn tool_approval_mode(
+        &self,
+        server_name: &str,
+        tool_name: &str,
+    ) -> codex_config::AppToolApproval {
+        self.server_metadata
+            .get(server_name)
+            .map(|metadata| metadata.tool_approval_mode(tool_name))
+            .unwrap_or_default()
+    }
+
+    pub fn is_host_owned_codex_apps_server(&self, server_name: &str) -> bool {
+        server_name == CODEX_APPS_MCP_SERVER_NAME && self.server_metadata.contains_key(server_name)
+    }
+
+    pub fn set_approval_policy(&self, approval_policy: &Constrained<AskForApproval>) {
+        if let Ok(mut policy) = self.elicitation_requests.approval_policy.lock() {
+            *policy = approval_policy.value();
+        }
+    }
+
+    pub fn set_permission_profile(&self, permission_profile: PermissionProfile) {
+        if let Ok(mut profile) = self.elicitation_requests.permission_profile.lock() {
+            *profile = permission_profile;
+        }
+    }
+
+    pub fn elicitations_auto_deny(&self) -> bool {
+        self.elicitation_requests.auto_deny()
+    }
+
+    pub fn set_elicitations_auto_deny(&self, auto_deny: bool) {
+        self.elicitation_requests.set_auto_deny(auto_deny);
     }
 
     pub async fn resolve_elicitation(
@@ -384,31 +441,6 @@ impl McpConnectionManager {
             Ok(Ok(_)) => true,
             Ok(Err(_)) | Err(_) => false,
         }
-    }
-
-    pub async fn required_startup_failures(
-        &self,
-        required_servers: &[String],
-    ) -> Vec<McpStartupFailure> {
-        let mut failures = Vec::new();
-        for server_name in required_servers {
-            let Some(async_managed_client) = self.clients.get(server_name).cloned() else {
-                failures.push(McpStartupFailure {
-                    server: server_name.clone(),
-                    error: format!("required MCP server `{server_name}` was not initialized"),
-                });
-                continue;
-            };
-
-            match async_managed_client.client().await {
-                Ok(_) => {}
-                Err(error) => failures.push(McpStartupFailure {
-                    server: server_name.clone(),
-                    error: startup_outcome_error_message(error),
-                }),
-            }
-        }
-        failures
     }
 
     /// Returns all tools with model-visible names normalized.
@@ -452,31 +484,6 @@ impl McpConnectionManager {
         normalize_tools_for_model_with_prefix(tools, self.prefix_mcp_tool_names)
     }
 
-    /// Returns presentation metadata without waiting for uncached clients still initializing.
-    /// Cached values will be used if available and the server is still starting up.
-    pub async fn list_available_server_infos(&self) -> HashMap<String, McpServerInfo> {
-        let mut server_infos = HashMap::new();
-        for (server_name, client) in &self.clients {
-            if !client.startup_complete.load(Ordering::Acquire) {
-                if let Some(server_info) = client.cached_server_info.clone() {
-                    server_infos.insert(server_name.clone(), server_info);
-                }
-                continue;
-            }
-            match client.client().await {
-                Ok(managed_client) => {
-                    server_infos.insert(server_name.clone(), managed_client.server_info);
-                }
-                Err(_) => {
-                    if let Some(server_info) = client.cached_server_info.clone() {
-                        server_infos.insert(server_name.clone(), server_info);
-                    }
-                }
-            }
-        }
-        server_infos
-    }
-
     /// Force-refresh codex apps tools by bypassing the in-process cache.
     ///
     /// On success, the refreshed tools replace the cache contents and the
@@ -495,6 +502,7 @@ impl McpConnectionManager {
         let fetch_start = Instant::now();
         let tools = list_tools_for_client_uncached(
             CODEX_APPS_MCP_SERVER_NAME,
+            /*is_codex_apps_mcp_server*/ true,
             &managed_client.client,
             managed_client.tool_timeout,
             managed_client.server_instructions.as_deref(),
@@ -509,8 +517,7 @@ impl McpConnectionManager {
             &[],
         );
 
-        write_cached_codex_apps_tools_if_needed(
-            CODEX_APPS_MCP_SERVER_NAME,
+        write_codex_apps_tools_cache(
             managed_client.codex_apps_tools_cache_context.as_ref(),
             &managed_client.server_info,
             &tools,
@@ -532,29 +539,20 @@ impl McpConnectionManager {
         ))
     }
 
-    fn with_server_metadata(&self, mut tool: ToolInfo) -> ToolInfo {
-        let Some(metadata) = self.server_metadata.get(&tool.server_name) else {
-            tool.supports_parallel_tool_calls = false;
-            tool.server_origin = None;
-            return tool;
-        };
-
-        tool.supports_parallel_tool_calls = metadata.supports_parallel_tool_calls;
-        tool.server_origin = metadata
-            .origin
-            .as_ref()
-            .map(|origin| origin.as_str().to_string());
-        tool
-    }
-
-    /// Returns a single map that contains all resources. Each key is the
-    /// server name and the value is a vector of resources.
-    pub async fn list_all_resources(&self) -> HashMap<String, Vec<Resource>> {
+    /// Returns resources from servers selected by `include_server`. Each key
+    /// is the server name and the value is a vector of resources.
+    pub async fn list_all_resources(
+        &self,
+        include_server: impl Fn(&str) -> bool,
+    ) -> HashMap<String, Vec<Resource>> {
         let mut join_set = JoinSet::new();
 
         let clients_snapshot = &self.clients;
 
-        for (server_name, async_managed_client) in clients_snapshot {
+        for (server_name, async_managed_client) in clients_snapshot
+            .iter()
+            .filter(|(server_name, _)| include_server(server_name))
+        {
             let server_name = server_name.clone();
             let Ok(managed_client) = async_managed_client.client().await else {
                 continue;
@@ -612,14 +610,20 @@ impl McpConnectionManager {
         aggregated
     }
 
-    /// Returns a single map that contains all resource templates. Each key is the
-    /// server name and the value is a vector of resource templates.
-    pub async fn list_all_resource_templates(&self) -> HashMap<String, Vec<ResourceTemplate>> {
+    /// Returns resource templates from servers selected by `include_server`.
+    /// Each key is the server name and the value is a vector of templates.
+    pub async fn list_all_resource_templates(
+        &self,
+        include_server: impl Fn(&str) -> bool,
+    ) -> HashMap<String, Vec<ResourceTemplate>> {
         let mut join_set = JoinSet::new();
 
         let clients_snapshot = &self.clients;
 
-        for (server_name, async_managed_client) in clients_snapshot {
+        for (server_name, async_managed_client) in clients_snapshot
+            .iter()
+            .filter(|(server_name, _)| include_server(server_name))
+        {
             let server_name_cloned = server_name.clone();
             let Ok(managed_client) = async_managed_client.client().await else {
                 continue;
@@ -778,6 +782,46 @@ impl McpConnectionManager {
             .with_context(|| format!("resources/read failed for `{server}` ({uri})"))
     }
 
+    /// Returns presentation metadata without waiting for uncached clients still initializing.
+    /// Cached values will be used if available and the server is still starting up.
+    pub(crate) async fn list_available_server_infos(&self) -> HashMap<String, McpServerInfo> {
+        let mut server_infos = HashMap::new();
+        for (server_name, client) in &self.clients {
+            if !client.startup_complete.load(Ordering::Acquire) {
+                if let Some(server_info) = client.cached_server_info.clone() {
+                    server_infos.insert(server_name.clone(), server_info);
+                }
+                continue;
+            }
+            match client.client().await {
+                Ok(managed_client) => {
+                    server_infos.insert(server_name.clone(), managed_client.server_info);
+                }
+                Err(_) => {
+                    if let Some(server_info) = client.cached_server_info.clone() {
+                        server_infos.insert(server_name.clone(), server_info);
+                    }
+                }
+            }
+        }
+        server_infos
+    }
+
+    fn with_server_metadata(&self, mut tool: ToolInfo) -> ToolInfo {
+        let Some(metadata) = self.server_metadata.get(&tool.server_name) else {
+            tool.supports_parallel_tool_calls = false;
+            tool.server_origin = None;
+            return tool;
+        };
+
+        tool.supports_parallel_tool_calls = metadata.supports_parallel_tool_calls;
+        tool.server_origin = metadata
+            .origin
+            .as_ref()
+            .map(|origin| origin.as_str().to_string());
+        tool
+    }
+
     async fn client_by_name(&self, name: &str) -> Result<ManagedClient> {
         self.clients
             .get(name)
@@ -786,6 +830,19 @@ impl McpConnectionManager {
             .await
             .context("failed to get client")
     }
+
+    #[cfg(test)]
+    fn new_uninitialized(
+        approval_policy: &Constrained<AskForApproval>,
+        permission_profile: &Constrained<PermissionProfile>,
+        prefix_mcp_tool_names: bool,
+    ) -> Self {
+        Self::new_uninitialized_with_permission_profile(
+            approval_policy,
+            permission_profile.get(),
+            prefix_mcp_tool_names,
+        )
+    }
 }
 
 impl Drop for McpConnectionManager {
@@ -793,6 +850,50 @@ impl Drop for McpConnectionManager {
         self.startup_cancellation_token.cancel();
         self.clients.clear();
     }
+}
+
+/// Creates the host-owned state used only by the Codex Apps server.
+///
+/// The tools cache is scoped to the authenticated user. Runtime authentication is supplied only
+/// when the server is not already configured to read a bearer token from the environment.
+fn codex_apps_cache_context_and_auth_provider(
+    server: &EffectiveMcpServer,
+    codex_home: &Path,
+    codex_apps_tools_cache_key: &CodexAppsToolsCacheKey,
+    codex_apps_auth_provider: Option<SharedAuthProvider>,
+) -> (
+    Option<CodexAppsToolsCacheContext>,
+    Option<SharedAuthProvider>,
+) {
+    let uses_env_bearer_token =
+        server
+            .configured_config()
+            .is_some_and(|config| match &config.transport {
+                McpServerTransportConfig::StreamableHttp {
+                    bearer_token_env_var,
+                    ..
+                } => bearer_token_env_var.is_some(),
+                McpServerTransportConfig::Stdio { .. } => false,
+            });
+    (
+        Some(CodexAppsToolsCacheContext {
+            codex_home: codex_home.to_path_buf(),
+            user_key: codex_apps_tools_cache_key.clone(),
+        }),
+        if uses_env_bearer_token {
+            None
+        } else {
+            codex_apps_auth_provider
+        },
+    )
+}
+
+/// Keeps regular MCP servers isolated from the host-owned Codex Apps cache and auth provider.
+fn regular_mcp_cache_context_and_auth_provider() -> (
+    Option<CodexAppsToolsCacheContext>,
+    Option<SharedAuthProvider>,
+) {
+    (None, None)
 }
 
 async fn emit_update(

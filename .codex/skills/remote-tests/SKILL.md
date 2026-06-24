@@ -3,12 +3,23 @@ name: remote-tests
 description: How to run tests using remote executor.
 ---
 
-Some codex integration tests support a running against a remote executor.
-This means that when CODEX_TEST_REMOTE_ENV environment variable is set they will attempt to start an executor process in a docker container CODEX_TEST_REMOTE_ENV points to and use it in tests.
+Some Codex integration tests select `local`, `docker`, or `wine-exec` through
+`CODEX_TEST_ENVIRONMENT`. The legacy `CODEX_TEST_REMOTE_ENV=<container>` still
+selects Docker; otherwise execution is local.
 
 Docker container is built and initialized via ./scripts/test-remote-env.sh
 
-Currently running remote tests is only supported on Linux, so you need to use a devbox to run them
+On x86-64 Linux, run Wine exec with
+`bazel test //codex-rs/core:core-all-wine-exec-test --test_output=errors`.
+
+Local execution targets the host OS, Docker targets Linux, and Wine exec targets
+Windows. Choose the skip macro by what the test depends on:
+
+- `skip_if_target_windows!`: Windows target behavior.
+- `skip_if_host_windows!`: Windows host constraints.
+- `skip_if_remote!`: Local-only test behavior.
+- `skip_if_no_remote_env!`: Remote-only test behavior.
+- `skip_if_wine_exec!`: Wine-specific runner debt.
 
 You can list devboxes via `applied_devbox ls`, pick the one with `codex` in the name.
 Connect to devbox via `ssh <devbox_name>`.

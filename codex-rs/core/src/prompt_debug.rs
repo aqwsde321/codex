@@ -2,10 +2,11 @@ use std::sync::Arc;
 
 use codex_exec_server::EnvironmentManager;
 use codex_exec_server::ExecServerRuntimePaths;
+use codex_extension_api::UserInstructionsProvider;
+use codex_features::Feature;
 use codex_login::AuthManager;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result as CodexResult;
-use codex_protocol::models::ResponseInputItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::user_input::UserInput;
@@ -27,6 +28,7 @@ pub async fn build_prompt_input(
     mut config: Config,
     input: Vec<UserInput>,
     state_db: Option<StateDbHandle>,
+    user_instructions_provider: Arc<dyn UserInstructionsProvider>,
 ) -> CodexResult<Vec<ResponseItem>> {
     config.ephemeral = true;
 
@@ -53,11 +55,13 @@ pub async fn build_prompt_input(
             .map_err(|err| CodexErr::Fatal(err.to_string()))?,
         ),
         empty_extension_registry(),
+        user_instructions_provider,
         /*analytics_events_client*/ None,
         thread_store,
         state_db.clone(),
         installation_id,
         /*attestation_provider*/ None,
+        /*external_time_provider*/ None,
     );
     let thread = thread_manager.start_thread(config).await?;
 
@@ -74,13 +78,23 @@ pub(crate) async fn build_prompt_input_from_session(
     input: Vec<UserInput>,
 ) -> CodexResult<Vec<ResponseItem>> {
     let turn_context = sess.new_default_turn().await;
-    sess.record_context_updates_and_set_reference_context_item(turn_context.as_ref())
+    let world_state = sess
+        .record_context_updates_and_set_reference_context_item(turn_context.as_ref())
         .await;
 
     if !input.is_empty() {
-        let input_item = ResponseInputItem::from(input);
-        let response_item = ResponseItem::from(input_item);
+        let response_item = sess.response_item_from_user_input(input);
         sess.record_conversation_items(turn_context.as_ref(), std::slice::from_ref(&response_item))
+            .await;
+    }
+
+    let step_context = sess.capture_step_context(Arc::clone(&turn_context)).await;
+    if turn_context
+        .config
+        .features
+        .enabled(Feature::DeferredExecutor)
+    {
+        sess.record_step_environment_context_if_changed(&world_state, step_context.as_ref())
             .await;
     }
 
@@ -88,7 +102,7 @@ pub(crate) async fn build_prompt_input_from_session(
         .clone_history()
         .await
         .for_prompt(&turn_context.model_info.input_modalities);
-    let router = built_tools(sess, turn_context.as_ref(), &CancellationToken::new()).await?;
+    let router = built_tools(sess, step_context.as_ref(), &CancellationToken::new()).await?;
     let base_instructions = sess.get_base_instructions().await;
     let prompt = build_prompt(
         prompt_input,
@@ -97,5 +111,5 @@ pub(crate) async fn build_prompt_input_from_session(
         base_instructions,
     );
 
-    Ok(prompt.get_formatted_input())
+    Ok(prompt.input)
 }
