@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 /Users/slogup/project/test/codex/.codex/hooks/turn_usage_summary.py",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}
