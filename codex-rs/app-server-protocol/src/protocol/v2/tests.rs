@@ -19,7 +19,7 @@ use codex_protocol::items::ReasoningItem;
 use codex_protocol::items::SubAgentActivityItem;
 use codex_protocol::items::TurnItem;
 use codex_protocol::items::UserMessageItem;
-use codex_protocol::items::WebSearchItem;
+use codex_protocol::items::WebSearchItem as CoreWebSearchItem;
 use codex_protocol::mcp::CallToolResult;
 use codex_protocol::mcp::McpServerInfo;
 use codex_protocol::memory_citation::MemoryCitation as CoreMemoryCitation;
@@ -219,6 +219,8 @@ fn thread_resume_response_round_trips_initial_turns_page() {
             next_cursor: Some("cursor_next".to_string()),
             backwards_cursor: Some("cursor_back".to_string()),
         }),
+        turns_backwards_cursor: Some("turns_head".to_string()),
+        items_backwards_cursor: Some("items_head".to_string()),
     };
 
     let value = serde_json::to_value(&response).expect("serialize thread resume response");
@@ -229,6 +231,14 @@ fn thread_resume_response_round_trips_initial_turns_page() {
             "nextCursor": "cursor_next",
             "backwardsCursor": "cursor_back",
         }))
+    );
+    assert_eq!(
+        value.get("turnsBackwardsCursor"),
+        Some(&json!("turns_head"))
+    );
+    assert_eq!(
+        value.get("itemsBackwardsCursor"),
+        Some(&json!("items_head"))
     );
     let decoded = serde_json::from_value::<ThreadResumeResponse>(value)
         .expect("deserialize thread resume response");
@@ -256,8 +266,11 @@ fn thread_items_list_round_trips() {
         })
     );
     let response = ThreadItemsListResponse {
-        data: vec![ThreadItem::ContextCompaction {
-            id: "item_1".to_string(),
+        data: vec![ThreadItemEntry {
+            turn_id: "turn_456".to_string(),
+            item: ThreadItem::ContextCompaction {
+                id: "item_1".to_string(),
+            },
         }],
         next_cursor: None,
         backwards_cursor: Some("cursor_0".to_string()),
@@ -266,7 +279,10 @@ fn thread_items_list_round_trips() {
     assert_eq!(
         serde_json::to_value(&response).expect("serialize response"),
         json!({
-            "data": [{"type": "contextCompaction", "id": "item_1"}],
+            "data": [{
+                "turnId": "turn_456",
+                "item": {"type": "contextCompaction", "id": "item_1"},
+            }],
             "nextCursor": null,
             "backwardsCursor": "cursor_0",
         })
@@ -419,6 +435,7 @@ fn external_agent_config_import_params_accept_legacy_plugin_details() {
                 }),
             }],
             source: None,
+            migration_source: None,
         }
     );
 }
@@ -2770,25 +2787,43 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
         }
     );
 
-    let search_item = TurnItem::WebSearch(WebSearchItem {
+    let search_item = TurnItem::WebSearch(CoreWebSearchItem {
         id: "search-1".to_string(),
         query: "docs".to_string(),
         action: CoreWebSearchAction::Search {
             query: Some("docs".to_string()),
             queries: None,
         },
+        results: Some(vec![serde_json::json!({
+            "type": "text_result",
+            "ref_id": "turn0search0",
+            "url": "https://example.com/docs",
+        })]),
     });
+
+    let expected_search_item = WebSearchItem {
+        id: "search-1".to_string(),
+        query: "docs".to_string(),
+        action: Some(WebSearchAction::Search {
+            query: Some("docs".to_string()),
+            queries: None,
+        }),
+        results: Some(vec![serde_json::json!({
+            "type": "text_result",
+            "ref_id": "turn0search0",
+            "url": "https://example.com/docs",
+        })]),
+    };
 
     assert_eq!(
         ThreadItem::from(search_item),
-        ThreadItem::WebSearch {
-            id: "search-1".to_string(),
-            query: "docs".to_string(),
-            action: Some(WebSearchAction::Search {
-                query: Some("docs".to_string()),
-                queries: None,
-            }),
-        }
+        ThreadItem::WebSearch(expected_search_item.clone())
+    );
+    assert_eq!(
+        ThreadItem::from(TurnItem::Extension(
+            codex_extension_items::ExtensionItem::WebSearch(expected_search_item.clone()),
+        )),
+        ThreadItem::WebSearch(expected_search_item)
     );
 
     let image_view_item = TurnItem::ImageView(ImageViewItem {
@@ -2842,7 +2877,6 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
         mcp_app_resource_uri: Some("app://connector".to_string()),
         link_id: Some("link_calendar".to_string()),
         app_name: Some("Calendar".to_string()),
-        template_id: Some("calendar_template".to_string()),
         action_name: Some("create_event".to_string()),
         plugin_id: Some("sample@test".to_string()),
         status: CoreMcpToolCallStatus::InProgress,
@@ -2864,7 +2898,6 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
                 link_id: Some("link_calendar".to_string()),
                 resource_uri: Some("app://connector".to_string()),
                 app_name: Some("Calendar".to_string()),
-                template_id: Some("calendar_template".to_string()),
                 action_name: Some("create_event".to_string()),
             }),
             mcp_app_resource_uri: Some("app://connector".to_string()),
@@ -2884,7 +2917,6 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
         mcp_app_resource_uri: None,
         link_id: None,
         app_name: None,
-        template_id: None,
         action_name: None,
         plugin_id: None,
         status: CoreMcpToolCallStatus::Completed,
@@ -2933,7 +2965,6 @@ fn mcp_tool_call_app_context_serializes_connector_id() {
             link_id: Some("link_calendar".to_string()),
             resource_uri: Some("app://connector".to_string()),
             app_name: Some("Calendar".to_string()),
-            template_id: Some("calendar_template".to_string()),
             action_name: Some("create_event".to_string()),
         }),
         mcp_app_resource_uri: Some("app://connector".to_string()),
@@ -2957,7 +2988,6 @@ fn mcp_tool_call_app_context_serializes_connector_id() {
                 "linkId": "link_calendar",
                 "resourceUri": "app://connector",
                 "appName": "Calendar",
-                "templateId": "calendar_template",
                 "actionName": "create_event",
             },
             "mcpAppResourceUri": "app://connector",
@@ -2977,7 +3007,6 @@ fn mcp_tool_call_app_context_serializes_missing_mixed_version_fields_as_null() {
             link_id: None,
             resource_uri: None,
             app_name: None,
-            template_id: None,
             action_name: None,
         })
         .expect("MCP tool call app context should serialize"),
@@ -2986,7 +3015,6 @@ fn mcp_tool_call_app_context_serializes_missing_mixed_version_fields_as_null() {
             "linkId": null,
             "resourceUri": null,
             "appName": null,
-            "templateId": null,
             "actionName": null,
         })
     );
@@ -3650,6 +3678,7 @@ fn plugin_share_list_response_serializes_share_items() {
                     installed: false,
                     enabled: false,
                     install_policy: PluginInstallPolicy::Available,
+                    install_policy_source: Some(PluginInstallPolicySource::WorkspaceSetting),
                     auth_policy: PluginAuthPolicy::OnUse,
                     availability: PluginAvailability::Available,
                     interface: None,
@@ -3672,6 +3701,7 @@ fn plugin_share_list_response_serializes_share_items() {
                     "installed": false,
                     "enabled": false,
                     "installPolicy": "AVAILABLE",
+                    "installPolicySource": "WORKSPACE_SETTING",
                     "authPolicy": "ON_USE",
                     "availability": "AVAILABLE",
                     "interface": null,
@@ -4207,13 +4237,15 @@ fn turn_start_params_round_trip_environments() {
     let raw_cwd = r"C:\workspace";
     let cwd: LegacyAppPathString =
         serde_json::from_value(json!(raw_cwd)).expect("API path should deserialize");
+    let workspace_root = cwd.clone();
     let params: TurnStartParams = serde_json::from_value(json!({
         "threadId": "thread_123",
         "input": [],
         "environments": [
             {
                 "environmentId": "local",
-                "cwd": cwd
+                "cwd": cwd,
+                "runtimeWorkspaceRoots": [workspace_root]
             }
         ],
     }))
@@ -4224,6 +4256,7 @@ fn turn_start_params_round_trip_environments() {
         Some(vec![TurnEnvironmentParams {
             environment_id: "local".to_string(),
             cwd: cwd.clone(),
+            runtime_workspace_roots: Some(vec![workspace_root.clone()]),
         }])
     );
     assert_eq!(
@@ -4237,7 +4270,8 @@ fn turn_start_params_round_trip_environments() {
         Some(&json!([
             {
                 "environmentId": "local",
-                "cwd": cwd
+                "cwd": cwd,
+                "runtimeWorkspaceRoots": [workspace_root]
             }
         ]))
     );
